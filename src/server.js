@@ -130,8 +130,6 @@ app.use((error, req, res, next) => {
 app.listen(PORT, () => {
     console.log(`🚀 XFactor Daily API server running on port ${PORT}`);
     console.log(`📊 Environment: ${process.env.NODE_ENV || 'development'}`);
-    console.log(`🌐 Frontend URL: ${process.env.FRONTEND_URL || 'http://localhost:5173'}`);
-    console.log(`🔗 Health check: http://localhost:${PORT}/health`);
 });
 
 export default app;
