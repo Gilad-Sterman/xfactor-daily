@@ -1,17 +1,126 @@
 import express from 'express';
 import { authenticateToken, requireAdmin, requireManager } from '../middleware/auth.js';
+import { supabaseAdmin } from '../config/supabase.js';
 
 const router = express.Router();
-
-// Placeholder routes - will implement these next
 
 /**
  * @route   GET /api/users
  * @desc    Get users (admin/manager only)
  * @access  Private (Admin/Manager)
  */
-router.get('/', authenticateToken, requireManager, (req, res) => {
-    res.status(200).json({ message: 'Users endpoint - coming soon' });
+router.get('/', authenticateToken, requireManager, async (req, res) => {
+    try {
+        const { 
+            search, 
+            role, 
+            company, 
+            is_active,
+            page = 1, 
+            limit = 20 
+        } = req.query;
+
+        let query = supabaseAdmin
+            .from('users')
+            .select('*')
+            .order('created_at', { ascending: false });
+
+        // Apply filters
+        if (search) {
+            query = query.or(`first_name.ilike.%${search}%,last_name.ilike.%${search}%,email.ilike.%${search}%,company.ilike.%${search}%`);
+        }
+        
+        if (role && role !== 'all') {
+            query = query.eq('role', role);
+        }
+        
+        if (company && company !== 'all') {
+            query = query.eq('company', company);
+        }
+        
+        if (is_active !== undefined && is_active !== 'all') {
+            query = query.eq('is_active', is_active === 'true');
+        }
+
+        // Get total count for pagination (using same filters)
+        let countQuery = supabaseAdmin
+            .from('users')
+            .select('*', { count: 'exact', head: true });
+
+        // Apply same filters to count query
+        if (search) {
+            countQuery = countQuery.or(`first_name.ilike.%${search}%,last_name.ilike.%${search}%,email.ilike.%${search}%,company.ilike.%${search}%`);
+        }
+        
+        if (role && role !== 'all') {
+            countQuery = countQuery.eq('role', role);
+        }
+        
+        if (company && company !== 'all') {
+            countQuery = countQuery.eq('company', company);
+        }
+        
+        if (is_active !== undefined && is_active !== 'all') {
+            countQuery = countQuery.eq('is_active', is_active === 'true');
+        }
+
+        const { count } = await countQuery;
+
+        // Apply pagination
+        const offset = (page - 1) * limit;
+        query = query.range(offset, offset + limit - 1);
+
+        const { data: users, error } = await query;
+
+
+        if (error) {
+            console.error('Error fetching users:', error);
+            return res.status(500).json({
+                error: 'Failed to fetch users',
+                message: 'An error occurred while fetching users'
+            });
+        }
+
+        // Format the response
+        const formattedUsers = users.map(user => ({
+            id: user.id,
+            email: user.email,
+            phone: user.phone,
+            firstName: user.first_name,
+            lastName: user.last_name,
+            fullName: `${user.first_name} ${user.last_name}`,
+            role: user.role,
+            company: user.company,
+            team: user.team,
+            isActive: user.is_active,
+            avatarUrl: user.avatar_url,
+            currentStreak: user.current_streak,
+            longestStreak: user.longest_streak,
+            totalLessonsCompleted: user.total_lessons_completed,
+            badgesEarned: user.badges_earned || [],
+            lastActivityDate: user.last_activity_date,
+            lastLogin: user.last_login,
+            createdAt: user.created_at,
+            updatedAt: user.updated_at
+        }));
+
+        res.status(200).json({
+            users: formattedUsers,
+            pagination: {
+                currentPage: parseInt(page),
+                totalPages: Math.ceil(count / limit),
+                totalUsers: count,
+                usersPerPage: parseInt(limit)
+            }
+        });
+
+    } catch (error) {
+        console.error('Error in users route:', error);
+        res.status(500).json({
+            error: 'Internal server error',
+            message: 'An error occurred while processing your request'
+        });
+    }
 });
 
 /**
@@ -30,6 +139,125 @@ router.put('/profile', authenticateToken, (req, res) => {
  */
 router.put('/progress', authenticateToken, (req, res) => {
     res.status(200).json({ message: 'Update progress endpoint - coming soon' });
+});
+
+/**
+ * @route   PUT /api/users/:id/role
+ * @desc    Update user role (admin only)
+ * @access  Private (Admin)
+ */
+router.put('/:id/role', authenticateToken, requireAdmin, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { role } = req.body;
+
+        // Validate role
+        const validRoles = ['learner', 'manager', 'support', 'admin'];
+        if (!validRoles.includes(role)) {
+            return res.status(400).json({
+                error: 'Invalid role',
+                message: `Role must be one of: ${validRoles.join(', ')}`
+            });
+        }
+
+        // Update user role
+        const { data: user, error } = await supabaseAdmin
+            .from('users')
+            .update({ 
+                role,
+                updated_at: new Date().toISOString()
+            })
+            .eq('id', id)
+            .select()
+            .single();
+
+        if (error) {
+            console.error('Error updating user role:', error);
+            return res.status(500).json({
+                error: 'Failed to update user role',
+                message: 'An error occurred while updating the user role'
+            });
+        }
+
+        if (!user) {
+            return res.status(404).json({
+                error: 'User not found',
+                message: 'The user you are trying to update does not exist'
+            });
+        }
+
+        res.status(200).json({
+            message: 'User role updated successfully',
+            user: {
+                id: user.id,
+                email: user.email,
+                fullName: `${user.first_name} ${user.last_name}`,
+                role: user.role
+            }
+        });
+
+    } catch (error) {
+        console.error('Error in update user role route:', error);
+        res.status(500).json({
+            error: 'Internal server error',
+            message: 'An error occurred while processing your request'
+        });
+    }
+});
+
+/**
+ * @route   PUT /api/users/:id/status
+ * @desc    Update user active status (admin only)
+ * @access  Private (Admin)
+ */
+router.put('/:id/status', authenticateToken, requireAdmin, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { is_active } = req.body;
+
+        // Update user status
+        const { data: user, error } = await supabaseAdmin
+            .from('users')
+            .update({ 
+                is_active,
+                updated_at: new Date().toISOString()
+            })
+            .eq('id', id)
+            .select()
+            .single();
+
+        if (error) {
+            console.error('Error updating user status:', error);
+            return res.status(500).json({
+                error: 'Failed to update user status',
+                message: 'An error occurred while updating the user status'
+            });
+        }
+
+        if (!user) {
+            return res.status(404).json({
+                error: 'User not found',
+                message: 'The user you are trying to update does not exist'
+            });
+        }
+
+        res.status(200).json({
+            message: `User ${is_active ? 'activated' : 'deactivated'} successfully`,
+            user: {
+                id: user.id,
+                email: user.email,
+                fullName: `${user.first_name} ${user.last_name}`,
+                isActive: user.is_active
+            }
+        });
+
+    } catch (error) {
+        console.error('Error in update user status route:', error);
+        res.status(500).json({
+            error: 'Internal server error',
+            message: 'An error occurred while processing your request'
+        });
+    }
 });
 
 /**

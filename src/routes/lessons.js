@@ -539,6 +539,7 @@ router.post('/:id/complete', authenticateToken, async (req, res) => {
         let newStreak = user.current_streak || 0;
         let newLongestStreak = user.longest_streak || 0;
         let newTotalCompleted = user.total_lessons_completed || 0;
+        
 
         if (!wasAlreadyCompleted) {
             newTotalCompleted += 1;
@@ -569,7 +570,6 @@ router.post('/:id/complete', authenticateToken, async (req, res) => {
                         newStreak += 1;
                     } else if (lastActivityDate === today) {
                         // Last activity was today - maintain current streak
-                        // (this shouldn't happen with our logic, but just in case)
                     } else {
                         // Gap in activity - reset streak to 1
                         newStreak = 1;
@@ -579,12 +579,25 @@ router.post('/:id/complete', authenticateToken, async (req, res) => {
                     newStreak = 1;
                 }
                 
+                // Special case: if current streak is 0, always set to 1 for first completion today
+                if (newStreak === 0) {
+                    newStreak = 1;
+                }
+                
                 // Update longest streak if current streak is higher
                 if (newStreak > newLongestStreak) {
                     newLongestStreak = newStreak;
                 }
+            } else {
+                // User already completed a lesson today
+                // Special edge case: if streak is 0 but user completed lesson today, fix it
+                if (newStreak === 0) {
+                    newStreak = 1;
+                    if (newStreak > newLongestStreak) {
+                        newLongestStreak = newStreak;
+                    }
+                }
             }
-            // If user already completed a lesson today, don't change streak
         }
 
         // Badge system - check for new badges earned
