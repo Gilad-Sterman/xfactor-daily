@@ -88,6 +88,8 @@ router.get('/', authenticateToken, async (req, res) => {
                 vimeoId: lesson.vimeo_video_id,
                 videoUrl: lesson.vimeo_video_id ? `https://vimeo.com/${lesson.vimeo_video_id}` : null,
                 tags: lesson.lesson_topics || [],
+                scheduledDate: lesson.scheduled_date,
+                isPublished: lesson.is_published,
                 createdAt: lesson.created_at,
                 updatedAt: lesson.updated_at,
                 userProgress: progress
@@ -178,6 +180,8 @@ router.get('/today', authenticateToken, async (req, res) => {
             vimeoId: selectedLesson.vimeo_video_id,
             videoUrl: selectedLesson.vimeo_video_id ? `https://vimeo.com/${selectedLesson.vimeo_video_id}` : null,
             tags: selectedLesson.lesson_topics || [],
+            scheduledDate: selectedLesson.scheduled_date,
+            isPublished: selectedLesson.is_published,
             userProgress: lessonProgress
         };
 
@@ -242,6 +246,8 @@ router.get('/:id', authenticateToken, async (req, res) => {
             vimeoId: lesson.vimeo_video_id,
             videoUrl: lesson.vimeo_video_id ? `https://vimeo.com/${lesson.vimeo_video_id}` : null,
             tags: lesson.lesson_topics || [],
+            scheduledDate: lesson.scheduled_date,
+            isPublished: lesson.is_published,
             supportMaterials: lesson.support_materials || [],
             createdAt: lesson.created_at,
             updatedAt: lesson.updated_at,
@@ -724,8 +730,70 @@ router.get('/:id/resume', authenticateToken, async (req, res) => {
  * @desc    Create lesson (admin)
  * @access  Private (Admin)
  */
-router.post('/', authenticateToken, requireAdmin, (req, res) => {
-    res.status(200).json({ message: 'Create lesson endpoint - coming soon' });
+router.post('/', authenticateToken, requireAdmin, async (req, res) => {
+    try {
+        const {
+            title,
+            description,
+            vimeo_video_id,
+            video_duration,
+            thumbnail_url,
+            category,
+            tags,
+            lesson_topics,
+            key_points,
+            scheduled_date,
+            is_published = false
+        } = req.body;
+
+        // Validate required fields
+        if (!title) {
+            return res.status(400).json({
+                error: 'Validation error',
+                message: 'Title is required'
+            });
+        }
+
+        // Create lesson
+        const { data: lesson, error } = await supabaseAdmin
+            .from('lessons')
+            .insert({
+                title,
+                description,
+                vimeo_video_id,
+                video_duration,
+                thumbnail_url,
+                category,
+                tags: tags || [],
+                lesson_topics: lesson_topics || [],
+                key_points: key_points || [],
+                scheduled_date: scheduled_date || null,
+                is_published,
+                support_materials: []
+            })
+            .select()
+            .single();
+
+        if (error) {
+            console.error('Error creating lesson:', error);
+            return res.status(500).json({
+                error: 'Failed to create lesson',
+                message: 'An error occurred while creating the lesson'
+            });
+        }
+
+        res.status(201).json({
+            message: 'Lesson created successfully',
+            lesson
+        });
+
+    } catch (error) {
+        console.error('Error in create lesson route:', error);
+        res.status(500).json({
+            error: 'Internal server error',
+            message: 'An error occurred while processing your request'
+        });
+    }
 });
 
 /**
@@ -733,8 +801,82 @@ router.post('/', authenticateToken, requireAdmin, (req, res) => {
  * @desc    Update lesson (admin)
  * @access  Private (Admin)
  */
-router.put('/:id', authenticateToken, requireAdmin, (req, res) => {
-    res.status(200).json({ message: 'Update lesson endpoint - coming soon' });
+router.put('/:id', authenticateToken, requireAdmin, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const {
+            title,
+            description,
+            vimeo_video_id,
+            video_duration,
+            thumbnail_url,
+            category,
+            tags,
+            lesson_topics,
+            key_points,
+            scheduled_date,
+            is_published
+        } = req.body;
+
+        // Check if lesson exists
+        const { data: existingLesson, error: fetchError } = await supabaseAdmin
+            .from('lessons')
+            .select('id')
+            .eq('id', id)
+            .single();
+
+        if (fetchError || !existingLesson) {
+            return res.status(404).json({
+                error: 'Lesson not found',
+                message: 'The lesson you are trying to update does not exist'
+            });
+        }
+
+        // Prepare update data (only include fields that are provided)
+        const updateData = {};
+        if (title !== undefined) updateData.title = title;
+        if (description !== undefined) updateData.description = description;
+        if (vimeo_video_id !== undefined) updateData.vimeo_video_id = vimeo_video_id;
+        if (video_duration !== undefined) updateData.video_duration = video_duration;
+        if (thumbnail_url !== undefined) updateData.thumbnail_url = thumbnail_url;
+        if (category !== undefined) updateData.category = category;
+        if (tags !== undefined) updateData.tags = tags;
+        if (lesson_topics !== undefined) updateData.lesson_topics = lesson_topics;
+        if (key_points !== undefined) updateData.key_points = key_points;
+        if (scheduled_date !== undefined) updateData.scheduled_date = scheduled_date || null;
+        if (is_published !== undefined) updateData.is_published = is_published;
+        
+        // Always update the updated_at timestamp
+        updateData.updated_at = new Date().toISOString();
+
+        // Update lesson
+        const { data: lesson, error } = await supabaseAdmin
+            .from('lessons')
+            .update(updateData)
+            .eq('id', id)
+            .select()
+            .single();
+
+        if (error) {
+            console.error('Error updating lesson:', error);
+            return res.status(500).json({
+                error: 'Failed to update lesson',
+                message: 'An error occurred while updating the lesson'
+            });
+        }
+
+        res.status(200).json({
+            message: 'Lesson updated successfully',
+            lesson
+        });
+
+    } catch (error) {
+        console.error('Error in update lesson route:', error);
+        res.status(500).json({
+            error: 'Internal server error',
+            message: 'An error occurred while processing your request'
+        });
+    }
 });
 
 /**
