@@ -88,6 +88,7 @@ router.get('/', authenticateToken, async (req, res) => {
                 vimeoId: lesson.vimeo_video_id,
                 videoUrl: lesson.vimeo_video_id ? `https://vimeo.com/${lesson.vimeo_video_id}` : null,
                 tags: lesson.lesson_topics || [],
+                supportMaterials: lesson.support_materials || [],
                 scheduledDate: lesson.scheduled_date,
                 isPublished: lesson.is_published,
                 createdAt: lesson.created_at,
@@ -180,6 +181,7 @@ router.get('/today', authenticateToken, async (req, res) => {
             vimeoId: selectedLesson.vimeo_video_id,
             videoUrl: selectedLesson.vimeo_video_id ? `https://vimeo.com/${selectedLesson.vimeo_video_id}` : null,
             tags: selectedLesson.lesson_topics || [],
+            supportMaterials: selectedLesson.support_materials || [],
             scheduledDate: selectedLesson.scheduled_date,
             isPublished: selectedLesson.is_published,
             userProgress: lessonProgress
@@ -755,6 +757,7 @@ router.post('/', authenticateToken, requireAdmin, async (req, res) => {
             tags,
             lesson_topics,
             key_points,
+            support_materials,
             scheduled_date,
             is_published = false
         } = req.body;
@@ -782,7 +785,7 @@ router.post('/', authenticateToken, requireAdmin, async (req, res) => {
                 key_points: key_points || [],
                 scheduled_date: scheduled_date || null,
                 is_published,
-                support_materials: []
+                support_materials: support_materials || []
             })
             .select()
             .single();
@@ -827,6 +830,7 @@ router.put('/:id', authenticateToken, requireAdmin, async (req, res) => {
             tags,
             lesson_topics,
             key_points,
+            support_materials,
             scheduled_date,
             is_published
         } = req.body;
@@ -856,6 +860,7 @@ router.put('/:id', authenticateToken, requireAdmin, async (req, res) => {
         if (tags !== undefined) updateData.tags = tags;
         if (lesson_topics !== undefined) updateData.lesson_topics = lesson_topics;
         if (key_points !== undefined) updateData.key_points = key_points;
+        if (support_materials !== undefined) updateData.support_materials = support_materials;
         if (scheduled_date !== undefined) updateData.scheduled_date = scheduled_date || null;
         if (is_published !== undefined) updateData.is_published = is_published;
         
