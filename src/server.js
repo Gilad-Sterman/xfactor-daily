@@ -18,9 +18,10 @@ if (isDevelopment) {
     // More permissive CSP for development
     app.use(helmet({
         contentSecurityPolicy: false, // Disable CSP in development
+        frameguard: false // Disable X-Frame-Options in development for PDF viewer
     }));
 } else {
-    // Strict CSP for production
+    // Strict CSP for production with PDF viewer support
     app.use(helmet({
         contentSecurityPolicy: {
             directives: {
@@ -38,6 +39,8 @@ if (isDevelopment) {
                 formAction: ["'self'"],
             },
         },
+        // Allow iframe embedding from same origin for PDF viewer in production
+        frameguard: { action: 'sameorigin' }
     }));
 }
 

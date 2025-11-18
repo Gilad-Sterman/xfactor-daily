@@ -1,8 +1,107 @@
 import express from 'express';
+import multer from 'multer';
+import jwt from 'jsonwebtoken';
 import { authenticateToken, requireAdmin } from '../middleware/auth.js';
 import { supabaseAdmin } from '../config/supabase.js';
+import { uploadToCloudinary, generateSignedUrl } from '../config/cloudinary.js';
+import axios from 'axios';
 
 const router = express.Router();
+
+// Configure multer for file uploads
+const storage = multer.memoryStorage();
+const upload = multer({
+    storage: storage,
+    limits: {
+        fileSize: 10 * 1024 * 1024, // 10MB limit
+        files: 10 // Max 10 files per request
+    },
+    fileFilter: (req, file, cb) => {
+        // Only allow PDF files for support materials
+        if (file.mimetype === 'application/pdf') {
+            cb(null, true);
+        } else {
+            cb(new Error('Only PDF files are allowed for support materials'), false);
+        }
+    }
+});
+
+// Helper function to process support materials with file uploads
+const processSupportMaterials = async (materials, files) => {
+    if (!materials || !Array.isArray(materials)) {
+        return []
+    }
+
+    const processedMaterials = []
+
+    for (const material of materials) {
+        
+        if (material.type === 'link') {
+            // Link materials - just store as is
+            processedMaterials.push({
+                id: material.id || Date.now().toString(),
+                type: 'link',
+                name: material.name,
+                url: material.url,
+                created_at: material.created_at || new Date().toISOString()
+            });
+        } else if (material.type === 'file') {
+            // File materials - find corresponding uploaded file
+            // Try multiple matching strategies due to encoding issues with Hebrew filenames
+            let uploadedFile = files?.find(file => 
+                file.fieldname === `material_file_${material.id}`
+            );
+            
+            // If not found by fieldname, try by filename with encoding fixes
+            if (!uploadedFile && files?.length > 0) {
+                // For now, if we have exactly one file and one material, match them
+                if (files.length === 1 && materials.filter(m => m.type === 'file').length === 1) {
+                    uploadedFile = files[0];
+                } else {
+                    // Try to match by file extension and approximate size
+                    const materialExt = material.fileName?.split('.').pop()?.toLowerCase()
+                    uploadedFile = files.find(file => {
+                        const fileExt = file.originalname?.split('.').pop()?.toLowerCase()
+                        return fileExt === materialExt
+                    })
+                }
+            }
+
+
+            if (uploadedFile) {
+                try {
+                    // Upload to Cloudinary using the original material filename (proper encoding)
+                    // instead of the corrupted multer filename
+                    const uploadResult = await uploadToCloudinary(
+                        uploadedFile.buffer,
+                        material.fileName, // Use original filename with proper Hebrew encoding
+                        'lesson_materials'
+                    );
+
+                    processedMaterials.push({
+                        id: material.id || Date.now().toString(),
+                        type: 'file',
+                        name: material.name,
+                        fileName: material.fileName, // Use original filename with proper Hebrew encoding
+                        fileSize: uploadedFile.size,
+                        fileType: uploadedFile.mimetype,
+                        url: uploadResult.secure_url,
+                        cloudinaryPublicId: uploadResult.public_id,
+                        created_at: material.created_at || new Date().toISOString()
+                    });
+                } catch (uploadError) {
+                    console.error('Error uploading file to Cloudinary:', uploadError);
+                    throw new Error(`Failed to upload file: ${uploadedFile.originalname}`);
+                }
+            } else if (material.url) {
+                // File already uploaded (update scenario)
+                processedMaterials.push(material);
+            }
+        }
+    }
+
+    return processedMaterials;
+};
 
 /**
  * @route   GET /api/lessons
@@ -745,7 +844,7 @@ router.get('/:id/resume', authenticateToken, async (req, res) => {
  * @desc    Create lesson (admin)
  * @access  Private (Admin)
  */
-router.post('/', authenticateToken, requireAdmin, async (req, res) => {
+router.post('/', authenticateToken, requireAdmin, upload.array('support_files', 10), async (req, res) => {
     try {
         const {
             title,
@@ -770,6 +869,30 @@ router.post('/', authenticateToken, requireAdmin, async (req, res) => {
             });
         }
 
+        // Parse support_materials if it's a string (from FormData)
+        let parsedSupportMaterials = [];
+        if (support_materials) {
+            try {
+                parsedSupportMaterials = typeof support_materials === 'string' 
+                    ? JSON.parse(support_materials) 
+                    : support_materials;
+            } catch (parseError) {
+                console.error('Error parsing support_materials:', parseError);
+                return res.status(400).json({
+                    error: 'Invalid support materials format',
+                    message: 'Support materials must be valid JSON'
+                });
+            }
+        }
+
+        // Process support materials with file uploads
+        const processedMaterials = await processSupportMaterials(parsedSupportMaterials, req.files);
+
+        // Parse other array fields if they're strings
+        const parsedTags = tags ? (typeof tags === 'string' ? JSON.parse(tags) : tags) : [];
+        const parsedTopics = lesson_topics ? (typeof lesson_topics === 'string' ? JSON.parse(lesson_topics) : lesson_topics) : [];
+        const parsedKeyPoints = key_points ? (typeof key_points === 'string' ? JSON.parse(key_points) : key_points) : [];
+
         // Create lesson
         const { data: lesson, error } = await supabaseAdmin
             .from('lessons')
@@ -780,12 +903,12 @@ router.post('/', authenticateToken, requireAdmin, async (req, res) => {
                 video_duration,
                 thumbnail_url,
                 category,
-                tags: tags || [],
-                lesson_topics: lesson_topics || [],
-                key_points: key_points || [],
+                tags: parsedTags,
+                lesson_topics: parsedTopics,
+                key_points: parsedKeyPoints,
                 scheduled_date: scheduled_date || null,
                 is_published,
-                support_materials: support_materials || []
+                support_materials: processedMaterials
             })
             .select()
             .single();
@@ -805,6 +928,15 @@ router.post('/', authenticateToken, requireAdmin, async (req, res) => {
 
     } catch (error) {
         console.error('Error in create lesson route:', error);
+        
+        // Handle multer errors
+        if (error.message === 'Only PDF files are allowed for support materials') {
+            return res.status(400).json({
+                error: 'Invalid file type',
+                message: 'Only PDF files are allowed for support materials'
+            });
+        }
+
         res.status(500).json({
             error: 'Internal server error',
             message: 'An error occurred while processing your request'
@@ -817,7 +949,7 @@ router.post('/', authenticateToken, requireAdmin, async (req, res) => {
  * @desc    Update lesson (admin)
  * @access  Private (Admin)
  */
-router.put('/:id', authenticateToken, requireAdmin, async (req, res) => {
+router.put('/:id', authenticateToken, requireAdmin, upload.array('support_files', 10), async (req, res) => {
     try {
         const { id } = req.params;
         const {
@@ -849,6 +981,28 @@ router.put('/:id', authenticateToken, requireAdmin, async (req, res) => {
             });
         }
 
+        // Process support materials if provided
+        let processedMaterials = undefined;
+        if (support_materials !== undefined) {
+            try {
+                const parsedSupportMaterials = typeof support_materials === 'string' 
+                    ? JSON.parse(support_materials) 
+                    : support_materials;
+                processedMaterials = await processSupportMaterials(parsedSupportMaterials, req.files);
+            } catch (parseError) {
+                console.error('Error parsing support_materials:', parseError);
+                return res.status(400).json({
+                    error: 'Invalid support materials format',
+                    message: 'Support materials must be valid JSON'
+                });
+            }
+        }
+
+        // Parse array fields if they're strings (from FormData)
+        const parsedTags = tags !== undefined ? (typeof tags === 'string' ? JSON.parse(tags) : tags) : undefined;
+        const parsedTopics = lesson_topics !== undefined ? (typeof lesson_topics === 'string' ? JSON.parse(lesson_topics) : lesson_topics) : undefined;
+        const parsedKeyPoints = key_points !== undefined ? (typeof key_points === 'string' ? JSON.parse(key_points) : key_points) : undefined;
+
         // Prepare update data (only include fields that are provided)
         const updateData = {};
         if (title !== undefined) updateData.title = title;
@@ -857,10 +1011,10 @@ router.put('/:id', authenticateToken, requireAdmin, async (req, res) => {
         if (video_duration !== undefined) updateData.video_duration = video_duration;
         if (thumbnail_url !== undefined) updateData.thumbnail_url = thumbnail_url;
         if (category !== undefined) updateData.category = category;
-        if (tags !== undefined) updateData.tags = tags;
-        if (lesson_topics !== undefined) updateData.lesson_topics = lesson_topics;
-        if (key_points !== undefined) updateData.key_points = key_points;
-        if (support_materials !== undefined) updateData.support_materials = support_materials;
+        if (parsedTags !== undefined) updateData.tags = parsedTags;
+        if (parsedTopics !== undefined) updateData.lesson_topics = parsedTopics;
+        if (parsedKeyPoints !== undefined) updateData.key_points = parsedKeyPoints;
+        if (processedMaterials !== undefined) updateData.support_materials = processedMaterials;
         if (scheduled_date !== undefined) updateData.scheduled_date = scheduled_date || null;
         if (is_published !== undefined) updateData.is_published = is_published;
         
@@ -902,8 +1056,288 @@ router.put('/:id', authenticateToken, requireAdmin, async (req, res) => {
  * @desc    Upload support materials (admin)
  * @access  Private (Admin)
  */
-router.post('/:id/materials', authenticateToken, requireAdmin, (req, res) => {
-    res.status(200).json({ message: 'Upload materials endpoint - coming soon' });
+/**
+ * @route   GET /api/lessons/:id/materials/:materialId/view
+ * @desc    Get signed URL for protected PDF viewing
+ * @access  Private
+ */
+router.get('/:id/materials/:materialId/view', authenticateToken, async (req, res) => {
+    try {
+        const { id: lessonId, materialId } = req.params;
+        const userId = req.user.id;
+
+        // Verify lesson exists and user has access
+        const { data: lesson, error: lessonError } = await supabaseAdmin
+            .from('lessons')
+            .select('support_materials, is_published')
+            .eq('id', lessonId)
+            .single();
+
+        if (lessonError || !lesson) {
+            return res.status(404).json({
+                error: 'Lesson not found',
+                message: 'The requested lesson does not exist'
+            });
+        }
+
+        // Check if lesson is published (or user is admin)
+        if (!lesson.is_published && req.user.role !== 'admin') {
+            return res.status(403).json({
+                error: 'Access denied',
+                message: 'This lesson is not yet published'
+            });
+        }
+
+        // Find the specific material
+        const supportMaterials = lesson.support_materials || [];
+        const material = supportMaterials.find(m => m.id === materialId);
+
+        if (!material) {
+            return res.status(404).json({
+                error: 'Material not found',
+                message: 'The requested support material does not exist'
+            });
+        }
+
+        // Only handle file materials (PDFs)
+        if (material.type !== 'file') {
+            return res.status(400).json({
+                error: 'Invalid material type',
+                message: 'This endpoint only handles file materials'
+            });
+        }
+
+        // Generate signed URL for 2 hours access
+        const expiresInHours = 2;
+        const expiresAt = Math.floor(Date.now() / 1000) + (60 * 60 * expiresInHours);
+        
+        try {
+            const signedUrl = generateSignedUrl(material.cloudinaryPublicId, { 
+                expires_at: expiresAt,
+                resource_type: 'raw'
+            });
+
+            // Log access for security auditing
+            console.log(`📄 PDF access granted: User ${userId} accessing material ${materialId} from lesson ${lessonId}`);
+
+            res.json({
+                success: true,
+                data: {
+                    materialId,
+                    materialName: material.name,
+                    fileName: material.fileName,
+                    signedUrl,
+                    expiresAt: new Date(expiresAt * 1000).toISOString(),
+                    expiresInMinutes: expiresInHours * 60
+                }
+            });
+
+        } catch (cloudinaryError) {
+            console.error('Error generating signed URL:', cloudinaryError);
+            return res.status(500).json({
+                error: 'Failed to generate access URL',
+                message: 'Unable to generate secure access to the file'
+            });
+        }
+
+    } catch (error) {
+        console.error('Error in PDF view endpoint:', error);
+        res.status(500).json({
+            error: 'Internal server error',
+            message: 'An error occurred while processing your request'
+        });
+    }
+});
+
+/**
+ * @route   GET /api/lessons/:id/materials/:materialId/stream
+ * @desc    Stream PDF file with authentication (proxy through backend)
+ * @access  Private
+ */
+router.get('/:id/materials/:materialId/stream', async (req, res) => {
+    try {
+        const { id: lessonId, materialId } = req.params;
+        
+        // Manual authentication - check for token in header or query param
+        let token = req.headers.authorization?.replace('Bearer ', '');
+        if (!token && req.query.token) {
+            token = req.query.token;
+        }
+        
+        if (!token) {
+            return res.status(401).json({
+                error: 'Authentication required',
+                message: 'No token provided'
+            });
+        }
+        
+        // Verify token manually (similar to authenticateToken middleware)
+        let userId;
+        try {
+            const decoded = jwt.verify(token, process.env.JWT_SECRET);
+            userId = decoded.id;
+        } catch (tokenError) {
+            console.error('Token verification failed:', tokenError);
+            return res.status(401).json({
+                error: 'Invalid token',
+                message: 'Authentication failed'
+            });
+        }
+
+        // Verify lesson exists and user has access
+        const { data: lesson, error: lessonError } = await supabaseAdmin
+            .from('lessons')
+            .select('support_materials, is_published')
+            .eq('id', lessonId)
+            .single();
+
+        if (lessonError || !lesson) {
+            return res.status(404).json({
+                error: 'Lesson not found',
+                message: 'The requested lesson does not exist'
+            });
+        }
+
+        // Check if lesson is published (or user is admin)
+        if (!lesson.is_published && req.user.role !== 'admin') {
+            return res.status(403).json({
+                error: 'Access denied',
+                message: 'This lesson is not yet published'
+            });
+        }
+
+        // Find the specific material
+        const supportMaterials = lesson.support_materials || [];
+        const material = supportMaterials.find(m => m.id === materialId);
+
+        if (!material || material.type !== 'file') {
+            return res.status(404).json({
+                error: 'Material not found',
+                message: 'The requested PDF file does not exist'
+            });
+        }
+
+        // Generate signed URL for immediate access
+        const signedUrl = generateSignedUrl(material.cloudinaryPublicId, { 
+            expires_at: Math.floor(Date.now() / 1000) + (60 * 5), // 5 minutes
+            resource_type: 'raw'
+        });
+
+        try {
+            // Stream the PDF through our backend
+            const response = await axios({
+                method: 'GET',
+                url: signedUrl,
+                responseType: 'stream',
+                timeout: 30000 // 30 seconds timeout
+            });
+
+            // Set appropriate headers for PDF viewing
+            res.setHeader('Content-Type', 'application/pdf');
+            
+            // Properly encode Hebrew filename for Content-Disposition header
+            const encodedFilename = encodeURIComponent(material.fileName);
+            res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodedFilename}`);
+            
+            res.setHeader('Cache-Control', 'private, no-cache, no-store, must-revalidate');
+            res.setHeader('Pragma', 'no-cache');
+            res.setHeader('Expires', '0');
+            
+            // Security headers to prevent downloading/copying
+            res.setHeader('X-Content-Type-Options', 'nosniff');
+            res.setHeader('X-XSS-Protection', '1; mode=block');
+            // Remove X-Frame-Options to allow iframe embedding
+
+            // Pipe the PDF data through our backend
+            response.data.pipe(res);
+
+        } catch (streamError) {
+            console.error('Error streaming PDF:', streamError);
+            return res.status(500).json({
+                error: 'Failed to stream file',
+                message: 'Unable to load the PDF file'
+            });
+        }
+
+    } catch (error) {
+        console.error('Error in PDF stream endpoint:', error);
+        res.status(500).json({
+            error: 'Internal server error',
+            message: 'An error occurred while processing your request'
+        });
+    }
+});
+
+/**
+ * @route   GET /api/lessons/:id/materials
+ * @desc    Get all support materials for a lesson (with access URLs)
+ * @access  Private
+ */
+router.get('/:id/materials', authenticateToken, async (req, res) => {
+    try {
+        const { id: lessonId } = req.params;
+        const userId = req.user.id;
+
+        // Verify lesson exists and user has access
+        const { data: lesson, error: lessonError } = await supabaseAdmin
+            .from('lessons')
+            .select('support_materials, is_published, title')
+            .eq('id', lessonId)
+            .single();
+
+        if (lessonError || !lesson) {
+            return res.status(404).json({
+                error: 'Lesson not found',
+                message: 'The requested lesson does not exist'
+            });
+        }
+
+        // Check if lesson is published (or user is admin)
+        if (!lesson.is_published && req.user.role !== 'admin') {
+            return res.status(403).json({
+                error: 'Access denied',
+                message: 'This lesson is not yet published'
+            });
+        }
+
+        const supportMaterials = lesson.support_materials || [];
+        
+        // Process materials and add access URLs
+        const materialsWithAccess = supportMaterials.map(material => {
+            if (material.type === 'link') {
+                return {
+                    ...material,
+                    accessUrl: material.url,
+                    accessType: 'direct'
+                };
+            } else if (material.type === 'file') {
+                return {
+                    ...material,
+                    accessUrl: `/api/lessons/${lessonId}/materials/${material.id}/stream`,
+                    viewUrl: `/api/lessons/${lessonId}/materials/${material.id}/view`,
+                    accessType: 'protected'
+                };
+            }
+            return material;
+        });
+
+        res.json({
+            success: true,
+            data: {
+                lessonId,
+                lessonTitle: lesson.title,
+                materials: materialsWithAccess,
+                totalCount: materialsWithAccess.length
+            }
+        });
+
+    } catch (error) {
+        console.error('Error fetching lesson materials:', error);
+        res.status(500).json({
+            error: 'Internal server error',
+            message: 'An error occurred while fetching materials'
+        });
+    }
 });
 
 export default router;
