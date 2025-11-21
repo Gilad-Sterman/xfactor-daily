@@ -128,8 +128,82 @@ router.get('/', authenticateToken, requireManager, async (req, res) => {
  * @desc    Update own profile
  * @access  Private
  */
-router.put('/profile', authenticateToken, (req, res) => {
-    res.status(200).json({ message: 'Update profile endpoint - coming soon' });
+router.put('/profile', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { 
+            first_name, 
+            last_name, 
+            notification_enabled, 
+            notification_time 
+        } = req.body;
+
+        // Build update object with only provided fields
+        const updateData = {
+            updated_at: new Date().toISOString()
+        };
+
+        if (first_name !== undefined) updateData.first_name = first_name;
+        if (last_name !== undefined) updateData.last_name = last_name;
+        if (notification_enabled !== undefined) updateData.notification_enabled = notification_enabled;
+        if (notification_time !== undefined) updateData.notification_time = notification_time;
+
+        // Update user profile
+        const { data: user, error } = await supabaseAdmin
+            .from('users')
+            .update(updateData)
+            .eq('id', userId)
+            .select('*')
+            .single();
+
+        if (error) {
+            console.error('Error updating user profile:', error);
+            return res.status(500).json({
+                error: 'Failed to update profile',
+                message: 'An error occurred while updating your profile'
+            });
+        }
+
+        if (!user) {
+            return res.status(404).json({
+                error: 'User not found',
+                message: 'Your user profile could not be found'
+            });
+        }
+
+        // Return updated user data in the same format as auth endpoints
+        res.status(200).json({
+            message: 'Profile updated successfully',
+            user: {
+                id: user.id,
+                email: user.email,
+                firstName: user.first_name,
+                lastName: user.last_name,
+                phone: user.phone,
+                role: user.role,
+                company: user.company,
+                team: user.team,
+                avatarUrl: user.avatar_url,
+                notificationTime: user.notification_time,
+                notificationEnabled: user.notification_enabled,
+                timezone: user.timezone,
+                currentStreak: user.current_streak,
+                longestStreak: user.longest_streak,
+                totalLessonsCompleted: user.total_lessons_completed,
+                badgesEarned: user.badges_earned || [],
+                lastActivityDate: user.last_activity_date,
+                createdAt: user.created_at,
+                updatedAt: user.updated_at
+            }
+        });
+
+    } catch (error) {
+        console.error('Error in update profile route:', error);
+        res.status(500).json({
+            error: 'Internal server error',
+            message: 'An error occurred while processing your request'
+        });
+    }
 });
 
 /**

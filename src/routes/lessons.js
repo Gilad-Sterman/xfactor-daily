@@ -8,6 +8,30 @@ import axios from 'axios';
 
 const router = express.Router();
 
+// Helper function to get video duration from Vimeo API
+const getVimeoVideoDuration = async (vimeoId) => {
+    try {
+        // Use Vimeo's oEmbed API (no authentication required)
+        const response = await axios.get(`https://vimeo.com/api/oembed.json?url=https://vimeo.com/${vimeoId}`);
+        
+        if (response.data && response.data.duration) {
+            return response.data.duration; // Duration in seconds
+        }
+        
+        // Fallback: try the public API endpoint
+        const fallbackResponse = await axios.get(`https://vimeo.com/api/v2/video/${vimeoId}.json`);
+        
+        if (fallbackResponse.data && fallbackResponse.data[0] && fallbackResponse.data[0].duration) {
+            return fallbackResponse.data[0].duration; // Duration in seconds
+        }
+        
+        return null;
+    } catch (error) {
+        console.warn(`Could not fetch duration for Vimeo video ${vimeoId}:`, error.message);
+        return null; // Return null if we can't get the duration
+    }
+};
+
 // Configure multer for file uploads
 const storage = multer.memoryStorage();
 const upload = multer({
@@ -123,7 +147,8 @@ router.get('/', authenticateToken, async (req, res) => {
         let query = supabaseAdmin
             .from('lessons')
             .select('*')
-            .order('created_at', { ascending: false });
+            .order('chapter_order', { ascending: true })
+            .order('lesson_number', { ascending: true });
 
         // Apply filters
         if (category && category !== 'all') {
@@ -192,6 +217,9 @@ router.get('/', authenticateToken, async (req, res) => {
                 isPublished: lesson.is_published,
                 createdAt: lesson.created_at,
                 updatedAt: lesson.updated_at,
+                // Add the new ordering fields
+                lessonNumber: lesson.lesson_number,
+                chapterOrder: lesson.chapter_order,
                 userProgress: progress
             };
         });
@@ -236,7 +264,8 @@ router.get('/today', authenticateToken, async (req, res) => {
         const { data: allLessons, error: lessonsError } = await supabaseAdmin
             .from('lessons')
             .select('*')
-            .order('created_at', { ascending: false })
+            .order('chapter_order', { ascending: true })
+            .order('lesson_number', { ascending: true })
             .limit(10); // Get first 10 lessons
 
         if (lessonsError || !allLessons || allLessons.length === 0) {
@@ -283,6 +312,9 @@ router.get('/today', authenticateToken, async (req, res) => {
             supportMaterials: selectedLesson.support_materials || [],
             scheduledDate: selectedLesson.scheduled_date,
             isPublished: selectedLesson.is_published,
+            // Add the new ordering fields
+            lessonNumber: selectedLesson.lesson_number,
+            chapterOrder: selectedLesson.chapter_order,
             userProgress: lessonProgress
         };
 
@@ -352,6 +384,9 @@ router.get('/:id', authenticateToken, async (req, res) => {
             supportMaterials: lesson.support_materials || [],
             createdAt: lesson.created_at,
             updatedAt: lesson.updated_at,
+            // Add the new ordering fields
+            lessonNumber: lesson.lesson_number,
+            chapterOrder: lesson.chapter_order,
             userProgress: lessonProgress
         };
 
@@ -850,23 +885,80 @@ router.post('/', authenticateToken, requireAdmin, upload.array('support_files', 
             title,
             description,
             vimeo_video_id,
-            video_duration,
-            thumbnail_url,
             category,
+            chapterOrder,
+            lessonNumber,
             tags,
             lesson_topics,
-            key_points,
             support_materials,
-            scheduled_date,
             is_published = false
         } = req.body;
 
         // Validate required fields
-        if (!title) {
+        if (!title || !category) {
             return res.status(400).json({
                 error: 'Validation error',
-                message: 'Title is required'
+                message: 'Title and chapter are required'
             });
+        }
+
+        // Handle chapter ordering
+        let finalChapterOrder = parseInt(chapterOrder);
+        let finalLessonNumber = parseInt(lessonNumber);
+
+        // If no chapter order provided, find the next available chapter number
+        if (isNaN(finalChapterOrder)) {
+            const { data: maxChapterData } = await supabaseAdmin
+                .from('lessons')
+                .select('chapter_order')
+                .order('chapter_order', { ascending: false })
+                .limit(1);
+            
+            finalChapterOrder = maxChapterData && maxChapterData.length > 0 
+                ? (maxChapterData[0].chapter_order || 0) + 1 
+                : 0;
+        }
+
+        // Handle lesson numbering within chapter
+        if (isNaN(finalLessonNumber)) {
+            // Find the next lesson number in this chapter
+            const { data: chapterLessons } = await supabaseAdmin
+                .from('lessons')
+                .select('lesson_number')
+                .eq('chapter_order', finalChapterOrder)
+                .order('lesson_number', { ascending: false })
+                .limit(1);
+            
+            finalLessonNumber = chapterLessons && chapterLessons.length > 0 
+                ? (chapterLessons[0].lesson_number || 0) + 1 
+                : 1;
+        } else {
+            // If lesson number is provided, shift existing lessons in the chapter
+            const { data: existingLessons } = await supabaseAdmin
+                .from('lessons')
+                .select('id, lesson_number')
+                .eq('chapter_order', finalChapterOrder)
+                .gte('lesson_number', finalLessonNumber)
+                .order('lesson_number', { ascending: true });
+
+            // Update existing lessons to make room for the new lesson
+            if (existingLessons && existingLessons.length > 0) {
+                for (const lesson of existingLessons) {
+                    await supabaseAdmin
+                        .from('lessons')
+                        .update({ lesson_number: lesson.lesson_number + 1 })
+                        .eq('id', lesson.id);
+                }
+            }
+        }
+
+        // Generate thumbnail URL from Vimeo ID
+        const thumbnailUrl = vimeo_video_id ? `https://vumbnail.com/${vimeo_video_id}.jpg` : null;
+
+        // Fetch video duration from Vimeo API
+        let videoDuration = null;
+        if (vimeo_video_id) {
+            videoDuration = await getVimeoVideoDuration(vimeo_video_id);
         }
 
         // Parse support_materials if it's a string (from FormData)
@@ -891,7 +983,6 @@ router.post('/', authenticateToken, requireAdmin, upload.array('support_files', 
         // Parse other array fields if they're strings
         const parsedTags = tags ? (typeof tags === 'string' ? JSON.parse(tags) : tags) : [];
         const parsedTopics = lesson_topics ? (typeof lesson_topics === 'string' ? JSON.parse(lesson_topics) : lesson_topics) : [];
-        const parsedKeyPoints = key_points ? (typeof key_points === 'string' ? JSON.parse(key_points) : key_points) : [];
 
         // Create lesson
         const { data: lesson, error } = await supabaseAdmin
@@ -900,13 +991,13 @@ router.post('/', authenticateToken, requireAdmin, upload.array('support_files', 
                 title,
                 description,
                 vimeo_video_id,
-                video_duration,
-                thumbnail_url,
+                video_duration: videoDuration,
+                thumbnail_url: thumbnailUrl,
                 category,
+                chapter_order: finalChapterOrder,
+                lesson_number: finalLessonNumber,
                 tags: parsedTags,
                 lesson_topics: parsedTopics,
-                key_points: parsedKeyPoints,
-                scheduled_date: scheduled_date || null,
                 is_published,
                 support_materials: processedMaterials
             })
@@ -956,21 +1047,19 @@ router.put('/:id', authenticateToken, requireAdmin, upload.array('support_files'
             title,
             description,
             vimeo_video_id,
-            video_duration,
-            thumbnail_url,
             category,
+            chapterOrder,
+            lessonNumber,
             tags,
             lesson_topics,
-            key_points,
             support_materials,
-            scheduled_date,
             is_published
         } = req.body;
 
-        // Check if lesson exists
+        // Check if lesson exists and get current values
         const { data: existingLesson, error: fetchError } = await supabaseAdmin
             .from('lessons')
-            .select('id')
+            .select('id, chapter_order, lesson_number, vimeo_video_id')
             .eq('id', id)
             .single();
 
@@ -979,6 +1068,66 @@ router.put('/:id', authenticateToken, requireAdmin, upload.array('support_files'
                 error: 'Lesson not found',
                 message: 'The lesson you are trying to update does not exist'
             });
+        }
+
+        // Handle chapter and lesson number changes
+        let finalChapterOrder = chapterOrder !== undefined ? parseInt(chapterOrder) : existingLesson.chapter_order;
+        let finalLessonNumber = lessonNumber !== undefined ? parseInt(lessonNumber) : existingLesson.lesson_number;
+
+        // If chapter or lesson number changed, handle reordering
+        if (chapterOrder !== undefined || lessonNumber !== undefined) {
+            const currentChapterOrder = existingLesson.chapter_order;
+            const currentLessonNumber = existingLesson.lesson_number;
+
+            // If moving to a different chapter or different lesson number
+            if (finalChapterOrder !== currentChapterOrder || finalLessonNumber !== currentLessonNumber) {
+                // Remove from current position (shift lessons down)
+                const { data: lessonsToShiftDown } = await supabaseAdmin
+                    .from('lessons')
+                    .select('id, lesson_number')
+                    .eq('chapter_order', currentChapterOrder)
+                    .gt('lesson_number', currentLessonNumber);
+
+                if (lessonsToShiftDown && lessonsToShiftDown.length > 0) {
+                    for (const lesson of lessonsToShiftDown) {
+                        await supabaseAdmin
+                            .from('lessons')
+                            .update({ lesson_number: lesson.lesson_number - 1 })
+                            .eq('id', lesson.id);
+                    }
+                }
+
+                // Make room in new position (shift lessons up)
+                const { data: lessonsToShiftUp } = await supabaseAdmin
+                    .from('lessons')
+                    .select('id, lesson_number')
+                    .eq('chapter_order', finalChapterOrder)
+                    .gte('lesson_number', finalLessonNumber)
+                    .neq('id', id); // Don't include the lesson being moved
+
+                if (lessonsToShiftUp && lessonsToShiftUp.length > 0) {
+                    for (const lesson of lessonsToShiftUp) {
+                        await supabaseAdmin
+                            .from('lessons')
+                            .update({ lesson_number: lesson.lesson_number + 1 })
+                            .eq('id', lesson.id);
+                    }
+                }
+            }
+        }
+
+        // Generate thumbnail URL and fetch duration if Vimeo ID changed
+        let thumbnailUrl = undefined;
+        let videoDuration = undefined;
+        if (vimeo_video_id !== undefined) {
+            thumbnailUrl = vimeo_video_id ? `https://vumbnail.com/${vimeo_video_id}.jpg` : null;
+            
+            // Fetch video duration from Vimeo API
+            if (vimeo_video_id) {
+                videoDuration = await getVimeoVideoDuration(vimeo_video_id);
+            } else {
+                videoDuration = null; // Clear duration if video ID is removed
+            }
         }
 
         // Process support materials if provided
@@ -1001,21 +1150,20 @@ router.put('/:id', authenticateToken, requireAdmin, upload.array('support_files'
         // Parse array fields if they're strings (from FormData)
         const parsedTags = tags !== undefined ? (typeof tags === 'string' ? JSON.parse(tags) : tags) : undefined;
         const parsedTopics = lesson_topics !== undefined ? (typeof lesson_topics === 'string' ? JSON.parse(lesson_topics) : lesson_topics) : undefined;
-        const parsedKeyPoints = key_points !== undefined ? (typeof key_points === 'string' ? JSON.parse(key_points) : key_points) : undefined;
 
         // Prepare update data (only include fields that are provided)
         const updateData = {};
         if (title !== undefined) updateData.title = title;
         if (description !== undefined) updateData.description = description;
         if (vimeo_video_id !== undefined) updateData.vimeo_video_id = vimeo_video_id;
-        if (video_duration !== undefined) updateData.video_duration = video_duration;
-        if (thumbnail_url !== undefined) updateData.thumbnail_url = thumbnail_url;
+        if (videoDuration !== undefined) updateData.video_duration = videoDuration;
+        if (thumbnailUrl !== undefined) updateData.thumbnail_url = thumbnailUrl;
         if (category !== undefined) updateData.category = category;
+        if (chapterOrder !== undefined) updateData.chapter_order = finalChapterOrder;
+        if (lessonNumber !== undefined) updateData.lesson_number = finalLessonNumber;
         if (parsedTags !== undefined) updateData.tags = parsedTags;
         if (parsedTopics !== undefined) updateData.lesson_topics = parsedTopics;
-        if (parsedKeyPoints !== undefined) updateData.key_points = parsedKeyPoints;
         if (processedMaterials !== undefined) updateData.support_materials = processedMaterials;
-        if (scheduled_date !== undefined) updateData.scheduled_date = scheduled_date || null;
         if (is_published !== undefined) updateData.is_published = is_published;
         
         // Always update the updated_at timestamp
@@ -1336,6 +1484,78 @@ router.get('/:id/materials', authenticateToken, async (req, res) => {
         res.status(500).json({
             error: 'Internal server error',
             message: 'An error occurred while fetching materials'
+        });
+    }
+});
+
+/**
+ * @route   DELETE /api/lessons/:id
+ * @desc    Delete lesson (admin)
+ * @access  Private (Admin)
+ */
+router.delete('/:id', authenticateToken, requireAdmin, async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        // Check if lesson exists and get its position info
+        const { data: existingLesson, error: fetchError } = await supabaseAdmin
+            .from('lessons')
+            .select('id, title, chapter_order, lesson_number')
+            .eq('id', id)
+            .single();
+
+        if (fetchError || !existingLesson) {
+            return res.status(404).json({
+                error: 'Lesson not found',
+                message: 'The lesson you are trying to delete does not exist'
+            });
+        }
+
+        // Delete the lesson
+        const { error: deleteError } = await supabaseAdmin
+            .from('lessons')
+            .delete()
+            .eq('id', id);
+
+        if (deleteError) {
+            console.error('Error deleting lesson:', deleteError);
+            return res.status(500).json({
+                error: 'Failed to delete lesson',
+                message: 'An error occurred while deleting the lesson'
+            });
+        }
+
+        // Shift remaining lessons in the chapter down to fill the gap
+        const { data: lessonsToShift } = await supabaseAdmin
+            .from('lessons')
+            .select('id, lesson_number')
+            .eq('chapter_order', existingLesson.chapter_order)
+            .gt('lesson_number', existingLesson.lesson_number);
+
+        if (lessonsToShift && lessonsToShift.length > 0) {
+            for (const lesson of lessonsToShift) {
+                await supabaseAdmin
+                    .from('lessons')
+                    .update({ lesson_number: lesson.lesson_number - 1 })
+                    .eq('id', lesson.id);
+            }
+        }
+
+        res.status(200).json({
+            message: 'Lesson deleted successfully',
+            deletedLesson: {
+                id: existingLesson.id,
+                title: existingLesson.title,
+                chapter_order: existingLesson.chapter_order,
+                lesson_number: existingLesson.lesson_number
+            }
+        });
+
+    } catch (error) {
+        console.error('Error in delete lesson route:', error);
+        res.status(500).json({
+            error: 'Internal server error',
+            message: 'An error occurred while processing your request'
         });
     }
 });
