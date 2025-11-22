@@ -101,7 +101,12 @@ router.get('/', authenticateToken, requireManager, async (req, res) => {
             lastActivityDate: user.last_activity_date,
             lastLogin: user.last_login,
             createdAt: user.created_at,
-            updatedAt: user.updated_at
+            updatedAt: user.updated_at,
+            preferences: user.preferences || {
+                program_type: 'full_access',
+                chat_terms_accepted: false,
+                chat_terms_accepted_date: null
+            }
         }));
 
         res.status(200).json({
@@ -327,6 +332,89 @@ router.put('/:id/status', authenticateToken, requireAdmin, async (req, res) => {
 
     } catch (error) {
         console.error('Error in update user status route:', error);
+        res.status(500).json({
+            error: 'Internal server error',
+            message: 'An error occurred while processing your request'
+        });
+    }
+});
+
+/**
+ * @route   PUT /api/users/:id/details
+ * @desc    Update user details (email, status, program type) - admin only
+ * @access  Private (Admin)
+ */
+router.put('/:id/details', authenticateToken, requireAdmin, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { email, is_active, program_type } = req.body;
+
+        // Build update object with only provided fields
+        const updateData = {
+            updated_at: new Date().toISOString()
+        };
+
+        if (email !== undefined) updateData.email = email;
+        if (is_active !== undefined) updateData.is_active = is_active;
+        
+        // Handle program_type update in preferences
+        if (program_type !== undefined) {
+            // First get current preferences
+            const { data: currentUser } = await supabaseAdmin
+                .from('users')
+                .select('preferences')
+                .eq('id', id)
+                .single();
+
+            const currentPreferences = currentUser?.preferences || {
+                program_type: 'full_access',
+                chat_terms_accepted: false,
+                chat_terms_accepted_date: null
+            };
+
+            updateData.preferences = {
+                ...currentPreferences,
+                program_type
+            };
+        }
+
+        // Update user
+        const { data: user, error } = await supabaseAdmin
+            .from('users')
+            .update(updateData)
+            .eq('id', id)
+            .select('*')
+            .single();
+
+        if (error) {
+            console.error('Error updating user details:', error);
+            return res.status(500).json({
+                error: 'Failed to update user details',
+                message: 'An error occurred while updating the user details'
+            });
+        }
+
+        if (!user) {
+            return res.status(404).json({
+                error: 'User not found',
+                message: 'The user you are trying to update does not exist'
+            });
+        }
+
+        res.status(200).json({
+            message: 'User details updated successfully',
+            user: {
+                id: user.id,
+                email: user.email,
+                fullName: `${user.first_name} ${user.last_name}`,
+                role: user.role,
+                isActive: user.is_active,
+                preferences: user.preferences
+            }
+        });
+
+    } catch (error) {
+        console.error('Error in update user details route:', error);
         res.status(500).json({
             error: 'Internal server error',
             message: 'An error occurred while processing your request'

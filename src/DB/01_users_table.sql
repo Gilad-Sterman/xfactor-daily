@@ -24,6 +24,13 @@ CREATE TABLE users (
     total_lessons_completed INTEGER DEFAULT 0,
     badges_earned TEXT[] DEFAULT '{}', -- Array of badge names/IDs
     
+    -- User Preferences (program access & chat terms)
+    preferences JSONB DEFAULT '{
+        "program_type": "full_access",
+        "chat_terms_accepted": false,
+        "chat_terms_accepted_date": null
+    }'::jsonb,
+    
     -- Timestamps
     last_login TIMESTAMP,
     created_at TIMESTAMP DEFAULT NOW(),
@@ -35,6 +42,8 @@ CREATE INDEX idx_users_email ON users(email);
 CREATE INDEX idx_users_role ON users(role);
 CREATE INDEX idx_users_company ON users(company);
 CREATE INDEX idx_users_is_active ON users(is_active);
+CREATE INDEX idx_users_preferences_program_type ON users USING GIN ((preferences->>'program_type'));
+CREATE INDEX idx_users_preferences_chat_terms ON users USING GIN ((preferences->>'chat_terms_accepted'));
 
 -- Insert sample users with different roles
 INSERT INTO users (email, first_name, last_name, role, company, team, phone) VALUES
@@ -97,5 +106,10 @@ UPDATE users SET
     current_streak = 1,
     longest_streak = 5,
     total_lessons_completed = 1,
-    last_activity_date = CURRENT_DATE - INTERVAL '1 day'
+    last_activity_date = CURRENT_DATE - INTERVAL '1 day',
+    preferences = '{
+        "program_type": "daily_video",
+        "chat_terms_accepted": true,
+        "chat_terms_accepted_date": "2024-01-10T10:00:00Z"
+    }'::jsonb
 WHERE email = 'learner2@company1.co.il';
