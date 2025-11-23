@@ -128,7 +128,12 @@ router.post('/login', [
                 badges_earned: user.badges_earned,
                 created_at: user.created_at,
                 last_login: user.last_login,
-                last_activity_date: user.last_activity_date
+                last_activity_date: user.last_activity_date,
+                preferences: user.preferences || {
+                    program_type: 'full_access',
+                    chat_terms_accepted: false,
+                    chat_terms_accepted_date: null
+                }
             },
             tokens: {
                 accessToken: accessToken,
@@ -465,7 +470,12 @@ router.get('/me', authenticateToken, async (req, res) => {
                 totalLessonsCompleted: user.total_lessons_completed,
                 badgesEarned: user.badges_earned,
                 lastActivityDate: user.last_activity_date,
-                createdAt: user.created_at
+                createdAt: user.created_at,
+                preferences: user.preferences || {
+                    program_type: 'full_access',
+                    chat_terms_accepted: false,
+                    chat_terms_accepted_date: null
+                }
             }
         });
 

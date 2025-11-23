@@ -140,7 +140,8 @@ router.put('/profile', authenticateToken, async (req, res) => {
             first_name, 
             last_name, 
             notification_enabled, 
-            notification_time 
+            notification_time,
+            preferences
         } = req.body;
 
         // Build update object with only provided fields
@@ -152,6 +153,28 @@ router.put('/profile', authenticateToken, async (req, res) => {
         if (last_name !== undefined) updateData.last_name = last_name;
         if (notification_enabled !== undefined) updateData.notification_enabled = notification_enabled;
         if (notification_time !== undefined) updateData.notification_time = notification_time;
+        
+        // Handle preferences update
+        if (preferences !== undefined) {
+            // Get current preferences first
+            const { data: currentUser } = await supabaseAdmin
+                .from('users')
+                .select('preferences')
+                .eq('id', userId)
+                .single();
+
+            const currentPreferences = currentUser?.preferences || {
+                program_type: 'full_access',
+                chat_terms_accepted: false,
+                chat_terms_accepted_date: null
+            };
+
+            // Merge with new preferences
+            updateData.preferences = {
+                ...currentPreferences,
+                ...preferences
+            };
+        }
 
         // Update user profile
         const { data: user, error } = await supabaseAdmin
@@ -198,7 +221,12 @@ router.put('/profile', authenticateToken, async (req, res) => {
                 badgesEarned: user.badges_earned || [],
                 lastActivityDate: user.last_activity_date,
                 createdAt: user.created_at,
-                updatedAt: user.updated_at
+                updatedAt: user.updated_at,
+                preferences: user.preferences || {
+                    program_type: 'full_access',
+                    chat_terms_accepted: false,
+                    chat_terms_accepted_date: null
+                }
             }
         });
 

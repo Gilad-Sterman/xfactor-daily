@@ -60,7 +60,7 @@ const corsOptions = {
         ? process.env.FRONTEND_URL || false // In production, be more restrictive
         : process.env.FRONTEND_URL || 'http://localhost:5173', // In development, allow localhost
     credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization']
 };
 

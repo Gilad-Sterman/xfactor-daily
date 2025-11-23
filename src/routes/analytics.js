@@ -49,11 +49,19 @@ router.get('/dashboard', authenticateToken, requireManager, async (req, res) => 
 
         // Get support tickets count (if support_tickets table exists)
         let totalSupportTickets = 0;
+        let openSupportTickets = 0;
         try {
             const { count: supportCount } = await supabaseAdmin
                 .from('support_tickets')
                 .select('*', { count: 'exact', head: true });
             totalSupportTickets = supportCount || 0;
+
+            // Get open support tickets count
+            const { count: openCount } = await supabaseAdmin
+                .from('support_tickets')
+                .select('*', { count: 'exact', head: true })
+                .in('status', ['open', 'in_progress']);
+            openSupportTickets = openCount || 0;
         } catch (error) {
             // Support tickets table might not exist yet
             console.log('Support tickets table not found:', error.message);
@@ -107,6 +115,7 @@ router.get('/dashboard', authenticateToken, requireManager, async (req, res) => 
             publishedLessons,
             totalViews,
             totalSupportTickets,
+            openSupportTickets,
             totalBotQuestions,
             completionRate,
             usersWithCompletedLessons
