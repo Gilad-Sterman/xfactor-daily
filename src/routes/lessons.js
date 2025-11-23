@@ -552,10 +552,14 @@ router.put('/:id/progress', authenticateToken, async (req, res) => {
         const lessonProgress = currentProgress[lessonId] || {};
 
         // Update lesson progress
+        // Preserve existing completion status if already completed
+        const wasAlreadyCompleted = lessonProgress.status === 'completed'
+        
         const updatedProgress = {
             ...lessonProgress,
-            status: completion_percentage >= 100 ? 'completed' : 'in_progress',
-            last_watched_position: Math.max(last_watched_position, lessonProgress.last_watched_position || 0),
+            // Preserve completion status if already completed, otherwise update based on percentage
+            status: wasAlreadyCompleted ? 'completed' : (completion_percentage >= 100 ? 'completed' : 'in_progress'),
+            last_watched_position: last_watched_position, // Always use the provided position
             total_watch_time: Math.max(total_watch_time, lessonProgress.total_watch_time || 0),
             completion_percentage: Math.min(Math.max(completion_percentage || 0, lessonProgress.completion_percentage || 0), 100),
             updated_at: new Date().toISOString()
@@ -667,6 +671,8 @@ router.post('/:id/complete', authenticateToken, async (req, res) => {
             ...lessonProgress,
             status: 'completed',
             completed_at: new Date().toISOString(),
+            last_watched_position: 0, // Reset to 0 when completed
+            total_watch_time: Math.max(final_watch_time || 0, lessonProgress.total_watch_time || 0),
             final_watch_time: final_watch_time || lessonProgress.total_watch_time || 0,
             completion_percentage: 100,
             rating: rating || lessonProgress.rating,
