@@ -27,10 +27,10 @@ if (isDevelopment) {
             directives: {
                 defaultSrc: ["'self'"],
                 styleSrc: ["'self'", "'unsafe-inline'"],
-                scriptSrc: ["'self'", "'unsafe-inline'", "https://player.vimeo.com", "https://vimeo.com"],
+                scriptSrc: ["'self'", "'unsafe-inline'", "https://player.vimeo.com", "https://vimeo.com", "https://widget.blueyeai.co.il"],
                 imgSrc: ["'self'", "data:", "https:", "blob:"],
                 fontSrc: ["'self'", "data:"],
-                connectSrc: ["'self'", "https://player.vimeo.com", "https://vimeo.com"],
+                connectSrc: ["'self'", "https://player.vimeo.com", "https://vimeo.com", "https://widget.blueyeai.co.il", "https://*.blueyeai.co.il"],
                 frameSrc: ["'self'", "https://player.vimeo.com", "https://vimeo.com", "https://*.vimeo.com"],
                 childSrc: ["'self'", "https://player.vimeo.com", "https://vimeo.com", "https://*.vimeo.com"],
                 mediaSrc: ["'self'", "https:", "blob:"],
