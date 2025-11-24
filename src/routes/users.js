@@ -451,6 +451,77 @@ router.put('/:id/details', authenticateToken, requireAdmin, async (req, res) => 
 });
 
 /**
+ * @route   POST /api/users/increment-bot-usage
+ * @desc    Increment bot question count for current user
+ * @access  Private
+ */
+router.post('/increment-bot-usage', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.user.id;
+
+        // Get current user preferences
+        const { data: currentUser, error: fetchError } = await supabaseAdmin
+            .from('users')
+            .select('preferences')
+            .eq('id', userId)
+            .single();
+
+        if (fetchError || !currentUser) {
+            console.error('Error fetching user for bot usage:', fetchError);
+            return res.status(404).json({
+                error: 'User not found',
+                message: 'Could not find user to update bot usage'
+            });
+        }
+
+        const currentPreferences = currentUser.preferences || {
+            program_type: 'full_access',
+            chat_terms_accepted: false,
+            chat_terms_accepted_date: null
+        };
+
+        // Increment bot question count
+        const currentCount = currentPreferences.bot_questions_count || 0;
+        const updatedPreferences = {
+            ...currentPreferences,
+            bot_questions_count: currentCount + 1,
+            bot_last_used: new Date().toISOString()
+        };
+
+        // Update user preferences
+        const { data: updatedUser, error: updateError } = await supabaseAdmin
+            .from('users')
+            .update({ 
+                preferences: updatedPreferences,
+                updated_at: new Date().toISOString()
+            })
+            .eq('id', userId)
+            .select('preferences')
+            .single();
+
+        if (updateError) {
+            console.error('Error updating bot usage:', updateError);
+            return res.status(500).json({
+                error: 'Failed to update bot usage',
+                message: 'An error occurred while tracking bot usage'
+            });
+        }
+
+        res.status(200).json({
+            message: 'Bot usage tracked successfully',
+            bot_questions_count: updatedPreferences.bot_questions_count
+        });
+
+    } catch (error) {
+        console.error('Error in increment bot usage route:', error);
+        res.status(500).json({
+            error: 'Internal server error',
+            message: 'An error occurred while processing your request'
+        });
+    }
+});
+
+/**
  * @route   POST /api/users/invite
  * @desc    Invite new user (admin only)
  * @access  Private (Admin)

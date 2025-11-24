@@ -32,7 +32,7 @@ setInterval(() => {
  * @access  Public
  */
 router.post('/login', [
-    body('email').isEmail().normalizeEmail().withMessage('Valid email is required'),
+    body('email').isEmail().withMessage('Valid email is required'),
     body('password').isLength({ min: 1 }).withMessage('Password is required')
 ], async (req, res) => {
     try {
@@ -47,11 +47,11 @@ router.post('/login', [
 
         const { email, password } = req.body;
 
-        // Get user from database
+        // Get user from database (case-insensitive email lookup)
         const { data: user, error: userError } = await supabaseAdmin
             .from('users')
             .select('*')
-            .eq('email', email)
+            .ilike('email', email)
             .single();
 
         if (userError || !user) {
@@ -68,15 +68,25 @@ router.post('/login', [
             });
         }
 
-        // For development, we'll use simple password comparison
-        // In production, you'd hash passwords with bcrypt
-        const isValidPassword = password === 'password123'; // Simple dev password
-        
-        if (!isValidPassword) {
-            return res.status(401).json({
-                error: 'Invalid credentials',
-                message: 'Email or password is incorrect'
-            });
+        // Check if user has a password hash (for backward compatibility)
+        if (!user.password_hash) {
+            // Fallback for existing users without password hash
+            const isValidPassword = password === 'password123';
+            if (!isValidPassword) {
+                return res.status(401).json({
+                    error: 'Invalid credentials',
+                    message: 'Email or password is incorrect. Please contact admin to set up your password.'
+                });
+            }
+        } else {
+            // Use bcrypt to compare hashed password
+            const isValidPassword = await bcrypt.compare(password, user.password_hash);
+            if (!isValidPassword) {
+                return res.status(401).json({
+                    error: 'Invalid credentials',
+                    message: 'Email or password is incorrect'
+                });
+            }
         }
 
         // Create JWT tokens
@@ -152,12 +162,148 @@ router.post('/login', [
 });
 
 /**
+ * @route   POST /api/auth/register
+ * @desc    Register new user with email and password
+ * @access  Public
+ */
+router.post('/register', [
+    body('email').isEmail().withMessage('Valid email is required'),
+    body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
+    body('firstName').notEmpty().withMessage('First name is required'),
+    body('lastName').notEmpty().withMessage('Last name is required'),
+    body('company').optional(),
+    body('team').optional(),
+    body('phone').optional()
+], async (req, res) => {
+    try {
+        // Check validation errors
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            return res.status(400).json({
+                error: 'Validation failed',
+                details: errors.array()
+            });
+        }
+
+        const { email, password, firstName, lastName, company, team, phone } = req.body;
+
+        // Check if user already exists (case-insensitive)
+        const { data: existingUser, error: checkError } = await supabaseAdmin
+            .from('users')
+            .select('id, email')
+            .ilike('email', email)
+            .single();
+
+        if (existingUser) {
+            return res.status(409).json({
+                error: 'User already exists',
+                message: 'An account with this email already exists'
+            });
+        }
+
+        // Hash password
+        const saltRounds = 12;
+        const passwordHash = await bcrypt.hash(password, saltRounds);
+
+        // Create new user
+        const { data: newUser, error: createError } = await supabaseAdmin
+            .from('users')
+            .insert({
+                email,
+                password_hash: passwordHash,
+                first_name: firstName,
+                last_name: lastName,
+                role: 'learner',
+                company: company || null,
+                team: team || null,
+                phone: phone || null,
+                is_active: true,
+                preferences: {
+                    program_type: 'full_access',
+                    chat_terms_accepted: false,
+                    chat_terms_accepted_date: null
+                }
+            })
+            .select()
+            .single();
+
+        if (createError || !newUser) {
+            console.error('User creation error:', createError);
+            return res.status(500).json({
+                error: 'Registration failed',
+                message: 'Failed to create user account'
+            });
+        }
+
+        // Create JWT tokens
+        const accessToken = jwt.sign(
+            { 
+                userId: newUser.id,
+                email: newUser.email,
+                role: 'authenticated'
+            },
+            process.env.JWT_SECRET,
+            { expiresIn: process.env.JWT_EXPIRES_IN || '24h' }
+        );
+        
+        const refreshToken = jwt.sign(
+            { 
+                userId: newUser.id,
+                email: newUser.email,
+                type: 'refresh'
+            },
+            process.env.JWT_SECRET,
+            { expiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '7d' }
+        );
+
+        // Return success response (same format as login)
+        res.status(201).json({
+            message: 'Registration successful',
+            user: {
+                id: newUser.id,
+                email: newUser.email,
+                first_name: newUser.first_name,
+                last_name: newUser.last_name,
+                phone: newUser.phone,
+                role: newUser.role,
+                company: newUser.company,
+                team: newUser.team,
+                avatar_url: newUser.avatar_url,
+                notification_time: newUser.notification_time,
+                notification_enabled: newUser.notification_enabled,
+                timezone: newUser.timezone,
+                current_streak: newUser.current_streak,
+                longest_streak: newUser.longest_streak,
+                total_lessons_completed: newUser.total_lessons_completed,
+                badges_earned: newUser.badges_earned,
+                created_at: newUser.created_at,
+                last_login: null,
+                last_activity_date: newUser.last_activity_date,
+                preferences: newUser.preferences
+            },
+            tokens: {
+                accessToken: accessToken,
+                refreshToken: refreshToken,
+                expiresIn: process.env.JWT_EXPIRES_IN || '24h'
+            }
+        });
+
+    } catch (error) {
+        console.error('Registration error:', error);
+        res.status(500).json({
+            error: 'Registration failed',
+            message: 'An error occurred during registration'
+        });
+    }
+});
+
+/**
  * @route   POST /api/auth/send-otp (DEPRECATED - keeping for reference)
  * @desc    Send OTP to user's email
  * @access  Public
  */
 router.post('/send-otp', [
-    body('email').isEmail().normalizeEmail().withMessage('Valid email is required')
+    body('email').isEmail().withMessage('Valid email is required')
 ], async (req, res) => {
     try {
         // Check validation errors
@@ -171,11 +317,11 @@ router.post('/send-otp', [
 
         const { email } = req.body;
 
-        // Check if user exists in our database
+        // Check if user exists and is active (case-insensitive)
         const { data: user, error: userError } = await supabaseAdmin
             .from('users')
             .select('id, email, first_name, is_active')
-            .eq('email', email)
+            .ilike('email', email)
             .single();
 
         if (userError || !user) {
@@ -237,7 +383,7 @@ router.post('/send-otp', [
  * @access  Public
  */
 router.post('/verify-otp', [
-    body('email').isEmail().normalizeEmail().withMessage('Valid email is required'),
+    body('email').isEmail().withMessage('Valid email is required'),
     body('otp').isLength({ min: 4, max: 8 }).withMessage('Valid OTP is required')
 ], async (req, res) => {
     try {

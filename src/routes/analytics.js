@@ -67,22 +67,23 @@ router.get('/dashboard', authenticateToken, requireManager, async (req, res) => 
             console.log('Support tickets table not found:', error.message);
         }
 
-        // Get bot questions count (if chat_sessions table exists)
+        // Get bot questions count from user preferences
         let totalBotQuestions = 0;
         try {
-            const { data: chatData } = await supabaseAdmin
-                .from('chat_sessions')
-                .select('messages');
+            const { data: usersWithBotUsage } = await supabaseAdmin
+                .from('users')
+                .select('preferences')
+                .not('preferences', 'is', null);
             
-            if (chatData) {
-                totalBotQuestions = chatData.reduce((sum, session) => {
-                    const messages = session.messages || [];
-                    return sum + messages.filter(msg => msg.sender === 'user').length;
+            if (usersWithBotUsage) {
+                totalBotQuestions = usersWithBotUsage.reduce((sum, user) => {
+                    const preferences = user.preferences || {};
+                    const botQuestions = preferences.bot_questions_count || 0;
+                    return sum + botQuestions;
                 }, 0);
             }
         } catch (error) {
-            // Chat sessions table might not exist yet
-            console.log('Chat sessions table not found:', error.message);
+            console.log('Error fetching bot usage data:', error.message);
         }
 
         // Calculate completion rate (users with at least one completed lesson)

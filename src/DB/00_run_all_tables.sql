@@ -17,6 +17,7 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE TABLE users (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     email VARCHAR(255) UNIQUE NOT NULL,
+    password_hash VARCHAR(255),
     phone VARCHAR(20),
     first_name VARCHAR(100) NOT NULL,
     last_name VARCHAR(100) NOT NULL,
@@ -39,6 +40,13 @@ CREATE TABLE users (
     total_lessons_completed INTEGER DEFAULT 0,
     badges_earned TEXT[] DEFAULT '{}', -- Array of badge names/IDs
     
+    -- User Preferences (program access & chat terms)
+    preferences JSONB DEFAULT '{
+        "program_type": "full_access",
+        "chat_terms_accepted": false,
+        "chat_terms_accepted_date": null
+    }'::jsonb,
+    
     -- Timestamps
     last_login TIMESTAMP,
     created_at TIMESTAMP DEFAULT NOW(),
@@ -50,6 +58,8 @@ CREATE INDEX idx_users_email ON users(email);
 CREATE INDEX idx_users_role ON users(role);
 CREATE INDEX idx_users_company ON users(company);
 CREATE INDEX idx_users_is_active ON users(is_active);
+CREATE INDEX idx_users_preferences_program_type ON users USING GIN ((preferences->>'program_type'));
+CREATE INDEX idx_users_preferences_chat_terms ON users USING GIN ((preferences->>'chat_terms_accepted'));
 
 -- =============================================================================
 -- 2. LESSONS TABLE
@@ -71,6 +81,10 @@ CREATE TABLE lessons (
     support_materials JSONB DEFAULT '[]', -- חומרי עזר - [{name, url, type, size}]
     key_points TEXT[],
     
+    -- Ordering & Organization
+    chapter_order INTEGER NOT NULL DEFAULT 0,
+    lesson_number INTEGER NOT NULL DEFAULT 1,
+    
     -- Scheduling
     scheduled_date DATE,
     is_published BOOLEAN DEFAULT false,
@@ -84,6 +98,9 @@ CREATE INDEX idx_lessons_category ON lessons(category);
 CREATE INDEX idx_lessons_scheduled_date ON lessons(scheduled_date);
 CREATE INDEX idx_lessons_is_published ON lessons(is_published);
 CREATE INDEX idx_lessons_vimeo_id ON lessons(vimeo_video_id);
+CREATE INDEX idx_lessons_chapter_order ON lessons(chapter_order);
+CREATE INDEX idx_lessons_lesson_number ON lessons(lesson_number);
+CREATE INDEX idx_lessons_chapter_lesson ON lessons(chapter_order, lesson_number);
 
 -- =============================================================================
 -- 3. SUPPORT TICKETS TABLE
@@ -132,115 +149,19 @@ CREATE TABLE system_settings (
 CREATE INDEX idx_system_settings_key ON system_settings(key);
 
 -- =============================================================================
--- SAMPLE DATA INSERTION
+-- SAMPLE USERS
 -- =============================================================================
 
--- Insert sample users with different roles
-INSERT INTO users (email, first_name, last_name, role, company, team, phone) VALUES
+-- Insert sample users for development/testing
+-- Password for all users: "password123" (hashed with bcrypt)
+INSERT INTO users (email, password_hash, first_name, last_name, role, company, team, phone) VALUES
 -- Admin user
-('admin@xfactor.co.il', 'אדמין', 'ראשי', 'admin', 'XFactor Daily', 'ניהול', '+972501234567'),
+('admin@xfactor.co.il', '$2a$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewdBPj/RK.s5uO.2', 'אדמין', 'ראשי', 'admin', 'XFactor Daily', 'ניהול', '+972501234567'),
 
--- Manager users
-('manager1@company1.co.il', 'יוסי', 'כהן', 'manager', 'חברת בנייה א', 'ניהול פרויקטים', '+972502345678'),
-('manager2@company2.co.il', 'רחל', 'לוי', 'manager', 'חברת בנייה ב', 'בקרת איכות', '+972503456789'),
-
--- Support user
-('support@xfactor.co.il', 'תמיכה', 'טכנית', 'support', 'XFactor Daily', 'תמיכה', '+972504567890'),
-
--- Learner users
-('learner1@company1.co.il', 'משה', 'אברהם', 'learner', 'חברת בנייה א', 'מהנדסים', '+972505678901'),
-('learner2@company1.co.il', 'שרה', 'יעקב', 'learner', 'חברת בנייה א', 'מפקחים', '+972506789012'),
-('learner3@company2.co.il', 'דוד', 'שמואל', 'learner', 'חברת בנייה ב', 'מהנדסים', '+972507890123'),
-('learner4@company2.co.il', 'מרים', 'רבקה', 'learner', 'חברת בנייה ב', 'בודקי דירות', '+972508901234'),
-('learner5@company1.co.il', 'אברהם', 'יצחק', 'learner', 'חברת בנייה א', 'אנשי שטח', '+972509012345');
-
--- Insert sample lessons based on provided data
-INSERT INTO lessons (
-    title, 
-    description, 
-    vimeo_video_id, 
-    video_duration, 
-    category, 
-    lesson_topics, 
-    key_points,
-    scheduled_date,
-    is_published,
-    tags
-) VALUES
-
--- פרק 1 – ריצוף
-(
-    'שיעור 1: רטיבות מצע הריצוף',
-    'בשיעור זה נדבר על הנושאים הבאים: דרישות הרטיבות לפני הנחת האריחים, דרישות הרטיבות אחרי הנחת האריחים, איך בודקים את רטיבות מצע הריצוף',
-    '919630593',
-    720, -- estimated 12 minutes
-    'ריצוף',
-    ARRAY['דרישות הרטיבות לפני הנחת האריחים', 'דרישות הרטיבות אחרי הנחת האריחים', 'איך בודקים את רטיבות מצע הריצוף'],
-    ARRAY['בדיקת רטיבות היא קריטית לאיכות הריצוף', 'יש לבדוק לפני ואחרי הנחת האריחים', 'שימוש בכלים מתאימים לבדיקה'],
-    CURRENT_DATE,
-    true,
-    ARRAY['ריצוף', 'רטיבות', 'בדיקות', 'איכות']
-),
-
-(
-    'שיעור 2: ספי מעבר בין אזורים בדירה',
-    'בשיעור זה נדבר על הנושאים הבאים: דרישות התקן, סף כניסה לדירה, סף בחדר רחצה',
-    '919630952',
-    600, -- estimated 10 minutes
-    'ריצוף',
-    ARRAY['דרישות התקן', 'סף כניסה לדירה', 'סף בחדר רחצה'],
-    ARRAY['ספי מעבר חייבים לעמוד בתקנים', 'הבדלים בין סף כניסה לסף חדר רחצה', 'חשיבות הגובה והחומר'],
-    CURRENT_DATE + INTERVAL '1 day',
-    true,
-    ARRAY['ריצוף', 'ספי מעבר', 'תקנים', 'חדר רחצה']
-),
-
-(
-    'שיעור 4: רוחב מישקים',
-    'בשיעור זה נדבר על הנושאים הבאים: דרישות התקן, ביצוע הבדיקה בשטח, הבדיקות המותרות',
-    '919631254',
-    540, -- estimated 9 minutes
-    'ריצוף',
-    ARRAY['דרישות התקן', 'ביצוע הבדיקה בשטח', 'הבדיקות המותרות'],
-    ARRAY['רוחב מישקים משפיע על איכות הריצוף', 'שיטות בדיקה מדויקות', 'טווח הסטיות המותרות'],
-    CURRENT_DATE + INTERVAL '2 days',
-    true,
-    ARRAY['ריצוף', 'מישקים', 'בדיקות', 'תקנים']
-),
-
--- פרק 2 – טיח
-(
-    'שיעור 13: סדקים וגימור פני הטיח',
-    'בשיעור זה נלמד על זיהוי וטיפול בסדקים בטיח ועל דרישות גימור פני הטיח',
-    '919972939',
-    660, -- estimated 11 minutes
-    'טיח',
-    ARRAY['זיהוי סדקים בטיח', 'סוגי סדקים', 'דרישות גימור פני הטיח', 'שיטות תיקון'],
-    ARRAY['סדקים יכולים להעיד על בעיות מבניות', 'חשיבות גימור איכותי', 'שיטות זיהוי מוקדמות'],
-    CURRENT_DATE + INTERVAL '3 days',
-    true,
-    ARRAY['טיח', 'סדקים', 'גימור', 'איכות']
-),
-
-(
-    'שיעור 14: אנכיות טיח',
-    'בשיעור זה נדבר על הנושאים הבאים: דרישות התקן, אופן ביצוע הבדיקה בשטח',
-    '919973196',
-    480, -- estimated 8 minutes
-    'טיח',
-    ARRAY['דרישות התקן', 'אופן ביצוע הבדיקה בשטח'],
-    ARRAY['אנכיות הטיח קריטית לאיכות הבנייה', 'שימוש בכלי מדידה מתאימים', 'טווח הסטיות המותרות'],
-    CURRENT_DATE + INTERVAL '4 days',
-    true,
-    ARRAY['טיח', 'אנכיות', 'בדיקות', 'תקנים']
-);
-
--- Insert default system settings
-INSERT INTO system_settings (key, value, description) VALUES
-('app_name', '"XFactor Daily"', 'Application name'),
-('daily_notification_time', '"09:00"', 'Default time for daily lesson notifications'),
-('lesson_completion_threshold', '80', 'Percentage watched to consider lesson completed'),
-('streak_reset_hours', '48', 'Hours after which streak resets if no activity');
+-- Learner users  
+('learner1@company1.co.il', '$2a$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewdBPj/RK.s5uO.2', 'משה', 'אברהם', 'learner', 'חברת בנייה א', 'מהנדסים', '+972505678901'),
+('learner2@company1.co.il', '$2a$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewdBPj/RK.s5uO.2', 'שרה', 'יעקב', 'learner', 'חברת בנייה א', 'מפקחים', '+972506789012');
 
 -- Success message
-SELECT 'Database setup completed successfully! All tables created with sample data.' as status;
+SELECT 'Database setup completed successfully! All tables created with sample users.' as status,
+       '1 admin and 2 learners added for development/testing. Password: "password123"' as note;
