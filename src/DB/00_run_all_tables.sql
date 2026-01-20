@@ -9,6 +9,9 @@
 -- Enable UUID extension if not already enabled
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
+-- Enable pg_trgm extension for GIN text indexes
+CREATE EXTENSION IF NOT EXISTS "pg_trgm";
+
 -- =============================================================================
 -- 1. USERS TABLE
 -- =============================================================================
@@ -58,8 +61,8 @@ CREATE INDEX idx_users_email ON users(email);
 CREATE INDEX idx_users_role ON users(role);
 CREATE INDEX idx_users_company ON users(company);
 CREATE INDEX idx_users_is_active ON users(is_active);
-CREATE INDEX idx_users_preferences_program_type ON users USING GIN ((preferences->>'program_type'));
-CREATE INDEX idx_users_preferences_chat_terms ON users USING GIN ((preferences->>'chat_terms_accepted'));
+CREATE INDEX idx_users_preferences_program_type ON users USING GIN ((preferences->>'program_type') gin_trgm_ops);
+CREATE INDEX idx_users_preferences_chat_terms ON users USING GIN ((preferences->>'chat_terms_accepted') gin_trgm_ops);
 
 -- =============================================================================
 -- 2. LESSONS TABLE

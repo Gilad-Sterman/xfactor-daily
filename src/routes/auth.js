@@ -201,14 +201,34 @@ router.post('/register', [
             });
         }
 
-        // Hash password
+        // Create user in Supabase Auth first (for password reset functionality)
+        const { data: authUser, error: authError } = await supabaseAdmin.auth.admin.createUser({
+            email: email,
+            password: password,
+            email_confirm: true, // Skip email confirmation
+            user_metadata: {
+                first_name: firstName,
+                last_name: lastName
+            }
+        });
+
+        if (authError) {
+            console.error('Supabase Auth user creation error:', authError);
+            return res.status(500).json({
+                error: 'Registration failed',
+                message: 'Failed to create authentication account'
+            });
+        }
+
+        // Hash password for custom users table
         const saltRounds = 12;
         const passwordHash = await bcrypt.hash(password, saltRounds);
 
-        // Create new user
+        // Create user in custom users table
         const { data: newUser, error: createError } = await supabaseAdmin
             .from('users')
             .insert({
+                id: authUser.user.id, // Use same ID as Supabase Auth user
                 email,
                 password_hash: passwordHash,
                 first_name: firstName,
@@ -229,6 +249,8 @@ router.post('/register', [
 
         if (createError || !newUser) {
             console.error('User creation error:', createError);
+            // Clean up Supabase Auth user if custom table insert fails
+            await supabaseAdmin.auth.admin.deleteUser(authUser.user.id);
             return res.status(500).json({
                 error: 'Registration failed',
                 message: 'Failed to create user account'
@@ -567,6 +589,194 @@ router.post('/refresh', [
 });
 
 /**
+ * @route   POST /api/auth/forgot-password
+ * @desc    Send password reset email using Supabase Auth
+ * @access  Public
+ */
+router.post('/forgot-password', [
+    body('email').isEmail().withMessage('Valid email is required')
+], async (req, res) => {
+    try {
+        // Check validation errors
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            return res.status(400).json({
+                error: 'Validation failed',
+                details: errors.array()
+            });
+        }
+
+        const { email } = req.body;
+
+        // Check if user exists in our database (case-insensitive)
+        const { data: user, error: userError } = await supabaseAdmin
+            .from('users')
+            .select('id, email, first_name, is_active')
+            .ilike('email', email)
+            .single();
+
+        if (userError || !user) {
+            // Don't reveal if user exists or not for security
+            return res.status(200).json({
+                message: 'If an account with this email exists, a password reset link has been sent.'
+            });
+        }
+
+        if (!user.is_active) {
+            return res.status(200).json({
+                message: 'If an account with this email exists, a password reset link has been sent.'
+            });
+        }
+
+        // Check if user exists in Supabase Auth
+        const { data: authUsers, error: authCheckError } = await supabaseAdmin.auth.admin.listUsers();
+        const existingAuthUser = authUsers?.users?.find(authUser => 
+            authUser.email?.toLowerCase() === email.toLowerCase()
+        );
+
+        if (!existingAuthUser) {
+            // Create user in Supabase Auth for existing users (migration)
+            const { data: newAuthUser, error: authCreateError } = await supabaseAdmin.auth.admin.createUser({
+                email: email,
+                password: 'temp-password-' + Date.now(), // Temporary password, will be reset
+                email_confirm: true,
+                user_metadata: {
+                    first_name: user.first_name,
+                    last_name: user.last_name,
+                    migrated_from_custom_table: true
+                }
+            });
+
+            if (authCreateError) {
+                console.error('Failed to create Supabase Auth user for migration:', authCreateError);
+                return res.status(500).json({
+                    error: 'Failed to prepare password reset',
+                    message: 'An error occurred while preparing your password reset'
+                });
+            }
+
+            // Update custom users table with Supabase Auth ID
+            const { error: updateError } = await supabaseAdmin
+                .from('users')
+                .update({ id: newAuthUser.user.id })
+                .eq('id', user.id);
+
+            if (updateError) {
+                console.error('Failed to update user ID after migration:', updateError);
+                // Continue anyway, the reset will still work
+            }
+        }
+
+        // Use Supabase Auth to send password reset email
+        const { error: resetError } = await supabase.auth.resetPasswordForEmail(email, {
+            redirectTo: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/reset-password`
+        });
+
+        if (resetError) {
+            console.error('Password reset error:', resetError);
+            return res.status(500).json({
+                error: 'Failed to send reset email',
+                message: 'An error occurred while sending the password reset email'
+            });
+        }
+
+        res.status(200).json({
+            message: 'If an account with this email exists, a password reset link has been sent.',
+            email: email
+        });
+
+    } catch (error) {
+        console.error('Forgot password error:', error);
+        res.status(500).json({
+            error: 'Failed to process request',
+            message: 'An error occurred while processing your password reset request'
+        });
+    }
+});
+
+/**
+ * @route   POST /api/auth/reset-password
+ * @desc    Reset password using Supabase Auth token and sync to our database
+ * @access  Public
+ */
+router.post('/reset-password', [
+    body('access_token').notEmpty().withMessage('Access token is required'),
+    body('refresh_token').notEmpty().withMessage('Refresh token is required'),
+    body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters')
+], async (req, res) => {
+    try {
+        // Check validation errors
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            return res.status(400).json({
+                error: 'Validation failed',
+                details: errors.array()
+            });
+        }
+
+        const { access_token, refresh_token, password } = req.body;
+
+        // Set the session with the tokens from the reset email
+        const { data: sessionData, error: sessionError } = await supabase.auth.setSession({
+            access_token,
+            refresh_token
+        });
+
+        if (sessionError || !sessionData.user) {
+            return res.status(400).json({
+                error: 'Invalid reset token',
+                message: 'The password reset token is invalid or has expired'
+            });
+        }
+
+        // Update password using Supabase Auth
+        const { error: updateError } = await supabase.auth.updateUser({
+            password: password
+        });
+
+        if (updateError) {
+            console.error('Supabase Auth password update error:', updateError);
+            return res.status(400).json({
+                error: 'Failed to update password',
+                message: 'An error occurred while updating your password'
+            });
+        }
+
+        // Hash the new password and sync to our users table
+        const saltRounds = 12;
+        const passwordHash = await bcrypt.hash(password, saltRounds);
+
+        // Update our users table with the new password hash
+        const { error: dbUpdateError } = await supabaseAdmin
+            .from('users')
+            .update({ 
+                password_hash: passwordHash,
+                updated_at: new Date().toISOString()
+            })
+            .eq('id', sessionData.user.id); // Use Supabase Auth user ID
+
+        if (dbUpdateError) {
+            console.error('Database password sync error:', dbUpdateError);
+            // Don't fail the request since Supabase password was updated successfully
+        }
+
+        res.status(200).json({
+            message: 'Password reset successfully',
+            user: {
+                email: sessionData.user.email
+            }
+        });
+
+    } catch (error) {
+        console.error('Reset password error:', error);
+        res.status(500).json({
+            error: 'Failed to reset password',
+            message: 'An error occurred while resetting your password'
+        });
+    }
+});
+
+/**
  * @route   POST /api/auth/logout
  * @desc    Logout user
  * @access  Public (no auth required - logout is client-side)
@@ -604,6 +814,7 @@ router.get('/me', authenticateToken, async (req, res) => {
                 email: user.email,
                 firstName: user.first_name,
                 lastName: user.last_name,
+                phone: user.phone,
                 role: user.role,
                 company: user.company,
                 team: user.team,

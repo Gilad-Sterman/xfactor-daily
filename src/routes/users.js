@@ -27,7 +27,7 @@ router.get('/', authenticateToken, requireManager, async (req, res) => {
 
         // Apply filters
         if (search) {
-            query = query.or(`first_name.ilike.%${search}%,last_name.ilike.%${search}%,email.ilike.%${search}%,company.ilike.%${search}%`);
+            query = query.or(`first_name.ilike.%${search}%,last_name.ilike.%${search}%,email.ilike.%${search}%,phone.ilike.%${search}%,company.ilike.%${search}%`);
         }
         
         if (role && role !== 'all') {
@@ -49,7 +49,7 @@ router.get('/', authenticateToken, requireManager, async (req, res) => {
 
         // Apply same filters to count query
         if (search) {
-            countQuery = countQuery.or(`first_name.ilike.%${search}%,last_name.ilike.%${search}%,email.ilike.%${search}%,company.ilike.%${search}%`);
+            countQuery = countQuery.or(`first_name.ilike.%${search}%,last_name.ilike.%${search}%,email.ilike.%${search}%,phone.ilike.%${search}%,company.ilike.%${search}%`);
         }
         
         if (role && role !== 'all') {
@@ -369,13 +369,22 @@ router.put('/:id/status', authenticateToken, requireAdmin, async (req, res) => {
 
 /**
  * @route   PUT /api/users/:id/details
- * @desc    Update user details (email, status, program type) - admin only
+ * @desc    Update user details (email, name, phone, company, team, status, program type) - admin only
  * @access  Private (Admin)
  */
 router.put('/:id/details', authenticateToken, requireAdmin, async (req, res) => {
     try {
         const { id } = req.params;
-        const { email, is_active, program_type } = req.body;
+        const { 
+            email, 
+            first_name, 
+            last_name, 
+            phone, 
+            company, 
+            team, 
+            is_active, 
+            program_type 
+        } = req.body;
 
         // Build update object with only provided fields
         const updateData = {
@@ -383,6 +392,11 @@ router.put('/:id/details', authenticateToken, requireAdmin, async (req, res) => 
         };
 
         if (email !== undefined) updateData.email = email;
+        if (first_name !== undefined) updateData.first_name = first_name;
+        if (last_name !== undefined) updateData.last_name = last_name;
+        if (phone !== undefined) updateData.phone = phone;
+        if (company !== undefined) updateData.company = company;
+        if (team !== undefined) updateData.team = team;
         if (is_active !== undefined) updateData.is_active = is_active;
         
         // Handle program_type update in preferences
@@ -434,7 +448,12 @@ router.put('/:id/details', authenticateToken, requireAdmin, async (req, res) => 
             user: {
                 id: user.id,
                 email: user.email,
+                firstName: user.first_name,
+                lastName: user.last_name,
                 fullName: `${user.first_name} ${user.last_name}`,
+                phone: user.phone,
+                company: user.company,
+                team: user.team,
                 role: user.role,
                 isActive: user.is_active,
                 preferences: user.preferences

@@ -904,10 +904,10 @@ router.post('/', authenticateToken, requireAdmin, upload.array('support_files', 
         } = req.body;
 
         // Validate required fields
-        if (!title || !category) {
+        if (!title || !category || !vimeo_video_id) {
             return res.status(400).json({
                 error: 'Validation error',
-                message: 'Title and chapter are required'
+                message: 'Title, chapter, and Vimeo Video ID are required'
             });
         }
 
