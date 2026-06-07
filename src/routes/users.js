@@ -103,7 +103,7 @@ router.get('/', authenticateToken, requireManager, async (req, res) => {
             createdAt: user.created_at,
             updatedAt: user.updated_at,
             preferences: user.preferences || {
-                program_type: 'full_access',
+                program_type: 'daily_video',
                 chat_terms_accepted: false,
                 chat_terms_accepted_date: null
             }
@@ -164,7 +164,7 @@ router.put('/profile', authenticateToken, async (req, res) => {
                 .single();
 
             const currentPreferences = currentUser?.preferences || {
-                program_type: 'full_access',
+                program_type: 'daily_video',
                 chat_terms_accepted: false,
                 chat_terms_accepted_date: null
             };
@@ -223,7 +223,7 @@ router.put('/profile', authenticateToken, async (req, res) => {
                 createdAt: user.created_at,
                 updatedAt: user.updated_at,
                 preferences: user.preferences || {
-                    program_type: 'full_access',
+                    program_type: 'daily_video',
                     chat_terms_accepted: false,
                     chat_terms_accepted_date: null
                 }
@@ -409,14 +409,16 @@ router.put('/:id/details', authenticateToken, requireAdmin, async (req, res) => 
                 .single();
 
             const currentPreferences = currentUser?.preferences || {
-                program_type: 'full_access',
+                program_type: 'daily_video',
                 chat_terms_accepted: false,
                 chat_terms_accepted_date: null
             };
 
+            const typeChanged = currentPreferences.program_type !== program_type;
             updateData.preferences = {
                 ...currentPreferences,
-                program_type
+                program_type,
+                ...(typeChanged ? { program_start_date: new Date().toISOString().split('T')[0] } : {})
             };
         }
 
@@ -494,7 +496,7 @@ router.post('/increment-bot-usage', authenticateToken, async (req, res) => {
         }
 
         const currentPreferences = currentUser.preferences || {
-            program_type: 'full_access',
+            program_type: 'daily_video',
             chat_terms_accepted: false,
             chat_terms_accepted_date: null
         };

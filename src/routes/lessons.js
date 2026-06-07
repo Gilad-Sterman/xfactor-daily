@@ -127,6 +127,55 @@ const processSupportMaterials = async (materials, files) => {
     return processedMaterials;
 };
 
+// Helper: count how many lessons a user has unlocked based on program_type.
+// daily_video  → 1 lesson per business day (Sun–Thu), skipping Fri & Sat
+// weekly_lesson → 1 lesson per calendar week
+// full_access  → all lessons (returns Infinity)
+const getUnlockedLessonsCount = (user) => {
+    const programType = user.preferences?.program_type || 'daily_video';
+    if (programType === 'full_access') return Infinity;
+
+    const startDate = user.preferences?.program_start_date || user.created_at;
+    const start = new Date(startDate);
+    start.setHours(0, 0, 0, 0);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    if (today < start) return 1;
+
+    if (programType === 'weekly_lesson') {
+        const msPerDay = 24 * 60 * 60 * 1000;
+        const calendarDays = Math.floor((today - start) / msPerDay);
+        return Math.floor(calendarDays / 7) + 1;
+    }
+
+    // daily_video: count Sun–Thu days elapsed after signup day
+    let businessDaysElapsed = 0;
+    const current = new Date(start);
+    current.setDate(current.getDate() + 1); // start counting from day after signup
+
+    while (current <= today) {
+        const dow = current.getDay(); // 0=Sun,1=Mon,2=Tue,3=Wed,4=Thu,5=Fri,6=Sat
+        if (dow !== 5 && dow !== 6) businessDaysElapsed++;
+        current.setDate(current.getDate() + 1);
+    }
+
+    return businessDaysElapsed + 1; // +1 for the signup day itself
+};
+
+// Helper: get the 0-based sequential index of a lesson among all published lessons
+const getLessonIndex = async (lessonId) => {
+    const { data: allPublished } = await supabaseAdmin
+        .from('lessons')
+        .select('id')
+        .eq('is_published', true)
+        .order('chapter_order', { ascending: true, nullsFirst: true })
+        .order('lesson_number', { ascending: true, nullsFirst: true });
+
+    if (!allPublished) return -1;
+    return allPublished.findIndex(l => l.id === lessonId);
+};
+
 /**
  * @route   GET /api/lessons
  * @desc    Get all lessons (with filters)
@@ -147,8 +196,13 @@ router.get('/', authenticateToken, async (req, res) => {
         let query = supabaseAdmin
             .from('lessons')
             .select('*')
-            .order('chapter_order', { ascending: true })
-            .order('lesson_number', { ascending: true });
+            .order('chapter_order', { ascending: true, nullsFirst: true })
+            .order('lesson_number', { ascending: true, nullsFirst: true });
+
+        // Regular users only see published lessons
+        if (req.user.role !== 'admin' && req.user.role !== 'manager') {
+            query = query.eq('is_published', true);
+        }
 
         // Apply filters
         if (category && category !== 'all') {
@@ -163,10 +217,12 @@ router.get('/', authenticateToken, async (req, res) => {
             query = query.or(`title.ilike.%${search}%,description.ilike.%${search}%`);
         }
 
-        // Get total count for pagination
-        const { count } = await supabaseAdmin
-            .from('lessons')
-            .select('*', { count: 'exact', head: true });
+        // Get total count for pagination (scoped to visible lessons)
+        let countQuery = supabaseAdmin.from('lessons').select('*', { count: 'exact', head: true });
+        if (req.user.role !== 'admin' && req.user.role !== 'manager') {
+            countQuery = countQuery.eq('is_published', true);
+        }
+        const { count } = await countQuery;
 
         // Apply pagination
         const offset = (page - 1) * limit;
@@ -192,6 +248,19 @@ router.get('/', authenticateToken, async (req, res) => {
         // Extract lesson progress from JSONB field
         const userLessonProgress = userData?.lesson_progress || {};
 
+        // Compute unlock count and build global index map for isLocked calculation
+        const unlockedCount = getUnlockedLessonsCount(req.user);
+        let globalIndexMap = {};
+        if (unlockedCount !== Infinity && req.user.role !== 'admin' && req.user.role !== 'manager') {
+            const { data: allPublishedOrdered } = await supabaseAdmin
+                .from('lessons')
+                .select('id')
+                .eq('is_published', true)
+                .order('chapter_order', { ascending: true, nullsFirst: true })
+                .order('lesson_number', { ascending: true, nullsFirst: true });
+            (allPublishedOrdered || []).forEach((l, i) => { globalIndexMap[l.id] = i; });
+        }
+
         // Format the response and apply status filter
         let formattedLessons = lessons.map(lesson => {
             const progress = userLessonProgress[lesson.id] || {
@@ -200,6 +269,10 @@ router.get('/', authenticateToken, async (req, res) => {
                 total_watch_time: 0,
                 completion_percentage: 0
             };
+
+            const isLocked = (req.user.role !== 'admin' && req.user.role !== 'manager' && unlockedCount !== Infinity)
+                ? (globalIndexMap[lesson.id] === undefined || globalIndexMap[lesson.id] >= unlockedCount)
+                : false;
 
             return {
                 id: lesson.id,
@@ -221,7 +294,8 @@ router.get('/', authenticateToken, async (req, res) => {
                 // Add the new ordering fields
                 lessonNumber: lesson.lesson_number,
                 chapterOrder: lesson.chapter_order,
-                userProgress: progress
+                userProgress: progress,
+                isLocked
             };
         });
 
@@ -261,13 +335,21 @@ router.get('/today', authenticateToken, async (req, res) => {
         // Get today's date
         const today = new Date().toISOString().split('T')[0];
         
-        // Get all lessons first
-        const { data: allLessons, error: lessonsError } = await supabaseAdmin
+        // Compute unlock count before querying — determines how many lessons are available
+        const unlockedCount = getUnlockedLessonsCount(req.user);
+
+        // Fetch lessons ordered — regular users only see published lessons
+        let todayQuery = supabaseAdmin
             .from('lessons')
             .select('*')
-            .order('chapter_order', { ascending: true })
-            .order('lesson_number', { ascending: true })
-            .limit(10); // Get first 10 lessons
+            .order('chapter_order', { ascending: true, nullsFirst: true })
+            .order('lesson_number', { ascending: true, nullsFirst: true });
+
+        if (req.user.role !== 'admin' && req.user.role !== 'manager') {
+            todayQuery = todayQuery.eq('is_published', true);
+        }
+
+        const { data: allLessons, error: lessonsError } = await todayQuery;
 
         if (lessonsError || !allLessons || allLessons.length === 0) {
             return res.status(404).json({
@@ -286,11 +368,16 @@ router.get('/today', authenticateToken, async (req, res) => {
         // Extract lesson progress from JSONB field
         const userLessonProgress = userData?.lesson_progress || {};
 
-        // Find a lesson that's not completed (or if all completed, get the first one)
-        let selectedLesson = allLessons.find(lesson => {
+        // Slice to the lessons unlocked for this user
+        const availableLessons = unlockedCount === Infinity
+            ? allLessons
+            : allLessons.slice(0, unlockedCount);
+
+        // Find the first uncompleted lesson among available lessons
+        let selectedLesson = availableLessons.find(lesson => {
             const progress = userLessonProgress[lesson.id];
             return !progress || progress.status !== 'completed';
-        }) || allLessons[0];
+        }) || availableLessons[availableLessons.length - 1] || allLessons[0];
 
         const lessonProgress = userLessonProgress[selectedLesson.id] || {
             status: 'not_started',
@@ -351,6 +438,18 @@ router.get('/:id', authenticateToken, async (req, res) => {
                 error: 'Lesson not found',
                 message: 'The requested lesson does not exist or is not available'
             });
+        }
+
+        // Block access if lesson is not yet unlocked for this user
+        if (req.user.role !== 'admin' && req.user.role !== 'manager') {
+            const lessonIndex = await getLessonIndex(id);
+            const unlockedCount = getUnlockedLessonsCount(req.user);
+            if (lessonIndex === -1 || lessonIndex >= unlockedCount) {
+                return res.status(403).json({
+                    error: 'Lesson locked',
+                    message: 'This lesson is not yet available in your program'
+                });
+            }
         }
 
         // Get user progress from users table (lesson_progress JSONB field)
@@ -427,6 +526,18 @@ router.post('/:id/start', authenticateToken, async (req, res) => {
                 error: 'Lesson not found',
                 message: 'The requested lesson does not exist'
             });
+        }
+
+        // Block access if lesson is not yet unlocked for this user
+        if (req.user.role !== 'admin' && req.user.role !== 'manager') {
+            const lessonIndex = await getLessonIndex(lessonId);
+            const unlockedCount = getUnlockedLessonsCount(req.user);
+            if (lessonIndex === -1 || lessonIndex >= unlockedCount) {
+                return res.status(403).json({
+                    error: 'Lesson locked',
+                    message: 'This lesson is not yet available in your program'
+                });
+            }
         }
 
         // Get current user progress
@@ -647,6 +758,18 @@ router.post('/:id/complete', authenticateToken, async (req, res) => {
             rating,
             feedback
         } = req.body;
+
+        // Block access if lesson is not yet unlocked for this user
+        if (req.user.role !== 'admin' && req.user.role !== 'manager') {
+            const lessonIndex = await getLessonIndex(lessonId);
+            const unlockedCount = getUnlockedLessonsCount(req.user);
+            if (lessonIndex === -1 || lessonIndex >= unlockedCount) {
+                return res.status(403).json({
+                    error: 'Lesson locked',
+                    message: 'This lesson is not yet available in your program'
+                });
+            }
+        }
 
         // Get current user progress
         const { data: user, error: userError } = await supabaseAdmin

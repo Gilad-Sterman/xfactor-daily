@@ -44,17 +44,7 @@ if (isDevelopment) {
     }));
 }
 
-// Rate limiting
-const limiter = rateLimit({
-    windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000, // 15 minutes
-    max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 100, // limit each IP to 100 requests per windowMs
-    message: {
-        error: 'Too many requests from this IP, please try again later.'
-    }
-});
-app.use(limiter);
-
-// CORS configuration
+// CORS must be registered before rate limiting so error responses (429) still carry CORS headers
 const corsOptions = {
     origin: process.env.NODE_ENV === 'production' 
         ? process.env.FRONTEND_URL || false // In production, be more restrictive
@@ -65,6 +55,19 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
+app.options('*', cors(corsOptions)); // Handle preflight for all routes
+
+// Rate limiting
+const limiter = rateLimit({
+    windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000, // 15 minutes
+    max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 500, // raised from 100 — SPAs make many parallel calls
+    standardHeaders: true, // Return rate limit info in RateLimit-* headers
+    legacyHeaders: false,
+    message: {
+        error: 'Too many requests from this IP, please try again later.'
+    }
+});
+app.use(limiter);
 
 // Body parsing middleware
 app.use(express.json({ limit: '10mb' }));

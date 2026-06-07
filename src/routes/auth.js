@@ -140,7 +140,7 @@ router.post('/login', [
                 last_login: user.last_login,
                 last_activity_date: user.last_activity_date,
                 preferences: user.preferences || {
-                    program_type: 'full_access',
+                    program_type: 'daily_video',
                     chat_terms_accepted: false,
                     chat_terms_accepted_date: null
                 }
@@ -239,7 +239,7 @@ router.post('/register', [
                 phone: phone || null,
                 is_active: true,
                 preferences: {
-                    program_type: 'full_access',
+                    program_type: 'daily_video',
                     chat_terms_accepted: false,
                     chat_terms_accepted_date: null
                 }
@@ -829,7 +829,7 @@ router.get('/me', authenticateToken, async (req, res) => {
                 lastActivityDate: user.last_activity_date,
                 createdAt: user.created_at,
                 preferences: user.preferences || {
-                    program_type: 'full_access',
+                    program_type: 'daily_video',
                     chat_terms_accepted: false,
                     chat_terms_accepted_date: null
                 }

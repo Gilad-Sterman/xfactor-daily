@@ -45,7 +45,7 @@ CREATE TABLE users (
     
     -- User Preferences (program access & chat terms)
     preferences JSONB DEFAULT '{
-        "program_type": "full_access",
+        "program_type": "daily_video",
         "chat_terms_accepted": false,
         "chat_terms_accepted_date": null
     }'::jsonb,
