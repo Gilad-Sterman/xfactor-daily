@@ -90,7 +90,7 @@ CREATE TABLE lessons (
     
     -- Scheduling
     scheduled_date DATE,
-    is_published BOOLEAN DEFAULT false,
+    is_published BOOLEAN DEFAULT true,
     
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW()
