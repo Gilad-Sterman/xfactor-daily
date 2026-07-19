@@ -544,11 +544,121 @@ router.post('/increment-bot-usage', authenticateToken, async (req, res) => {
 
 /**
  * @route   POST /api/users/invite
- * @desc    Invite new user (admin only)
+ * @desc    Invite new user (admin only) - creates account and returns a one-time password-set link
  * @access  Private (Admin)
  */
-router.post('/invite', authenticateToken, requireAdmin, (req, res) => {
-    res.status(200).json({ message: 'Invite user endpoint - coming soon' });
+router.post('/invite', authenticateToken, requireAdmin, async (req, res) => {
+    try {
+        const { email, first_name, last_name, phone, company, team, role, program_type } = req.body;
+
+        if (!email || !first_name || !last_name) {
+            return res.status(400).json({
+                error: 'Missing required fields',
+                message: 'Email, first name, and last name are required'
+            });
+        }
+
+        // Check if user already exists
+        const { data: existingUser } = await supabaseAdmin
+            .from('users')
+            .select('id')
+            .ilike('email', email)
+            .single();
+
+        if (existingUser) {
+            return res.status(409).json({
+                error: 'User already exists',
+                message: 'An account with this email already exists'
+            });
+        }
+
+        // Create user in Supabase Auth (password will be set by user via invite link)
+        const tempPassword = Math.random().toString(36).slice(-10) + 'A1!';
+        const { data: authUser, error: authError } = await supabaseAdmin.auth.admin.createUser({
+            email,
+            password: tempPassword,
+            email_confirm: true,
+            user_metadata: { first_name, last_name }
+        });
+
+        if (authError) {
+            console.error('Supabase Auth user creation error:', authError);
+            return res.status(500).json({
+                error: 'Failed to create user',
+                message: 'Failed to create authentication account'
+            });
+        }
+
+        // Create user in custom users table (no password_hash - user sets via invite link)
+        const { data: newUser, error: createError } = await supabaseAdmin
+            .from('users')
+            .insert({
+                id: authUser.user.id,
+                email,
+                first_name,
+                last_name,
+                phone: phone || null,
+                company: company || null,
+                team: team || null,
+                role: role || 'learner',
+                is_active: true,
+                preferences: {
+                    program_type: program_type || 'daily_video',
+                    chat_terms_accepted: false,
+                    chat_terms_accepted_date: null,
+                    program_start_date: new Date().toISOString().split('T')[0]
+                }
+            })
+            .select()
+            .single();
+
+        if (createError || !newUser) {
+            console.error('User creation error:', createError);
+            await supabaseAdmin.auth.admin.deleteUser(authUser.user.id);
+            return res.status(500).json({
+                error: 'Failed to create user',
+                message: 'Failed to create user account'
+            });
+        }
+
+        // Generate invite link - user clicks this to set their own password
+        const { data: linkData, error: linkError } = await supabaseAdmin.auth.admin.generateLink({
+            type: 'recovery',
+            email,
+            options: {
+                redirectTo: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/reset-password`
+            }
+        });
+
+        if (linkError) {
+            console.error('Error generating invite link:', linkError);
+        }
+
+        res.status(201).json({
+            message: 'User invited successfully',
+            user: {
+                id: newUser.id,
+                email: newUser.email,
+                firstName: newUser.first_name,
+                lastName: newUser.last_name,
+                fullName: `${newUser.first_name} ${newUser.last_name}`,
+                role: newUser.role,
+                company: newUser.company,
+                team: newUser.team,
+                isActive: true,
+                preferences: newUser.preferences,
+                createdAt: newUser.created_at
+            },
+            inviteLink: linkData?.properties?.action_link || null
+        });
+
+    } catch (error) {
+        console.error('Error in invite user route:', error);
+        res.status(500).json({
+            error: 'Internal server error',
+            message: 'An error occurred while processing your request'
+        });
+    }
 });
 
 export default router;
